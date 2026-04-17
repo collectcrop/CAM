@@ -1,0 +1,100 @@
+cmake_minimum_required(VERSION 3.16)
+
+project(CAM LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(CAM_ENABLE_WARNINGS "Enable common compiler warnings" ON)
+
+add_library(cam_cache STATIC
+    src/cache/CacheFactory.cpp
+)
+
+target_include_directories(cam_cache
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+if(CAM_ENABLE_WARNINGS)
+    target_compile_options(cam_cache PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+endif()
+
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(cam_cache PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
+add_executable(pgm_bench
+    exp/pgm_bench.cpp
+)
+
+add_executable(pgm_cam_covariance
+    exp/pgm_cam_covariance.cpp
+)
+
+add_executable(sort_cache_tradeoff
+    exp/sort_cache_tradeoff.cpp
+)
+
+add_executable(pgm_cache_simulate
+    exp/pgm_cache_simulate.cpp
+)
+
+target_include_directories(pgm_bench
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_include_directories(pgm_cam_covariance
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_include_directories(sort_cache_tradeoff
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_include_directories(pgm_cache_simulate
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(pgm_bench
+    PRIVATE
+        cam_cache
+)
+
+target_link_libraries(pgm_cam_covariance
+    PRIVATE
+        cam_cache
+)
+
+target_link_libraries(sort_cache_tradeoff
+    PRIVATE
+        cam_cache
+)
+
+target_link_libraries(pgm_cache_simulate
+    PRIVATE
+        cam_cache
+)
+
+if(CAM_ENABLE_WARNINGS)
+    target_compile_options(pgm_bench PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(pgm_cam_covariance PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(sort_cache_tradeoff PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(pgm_cache_simulate PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+endif()
