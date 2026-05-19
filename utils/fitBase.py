@@ -70,6 +70,7 @@ def compute_model_costs_per_query(
     query_file: str,
     fetch_strategy: str = "all_in_once",
     mode: str = "point",
+    cold_start_correction: bool = False,
 ) -> np.ndarray:
     """
     对固定 M（MiB）与一组 eps，调用 cost_function/range_cost_function，
@@ -91,10 +92,10 @@ def compute_model_costs_per_query(
                 M_bytes,
                 ipp,
                 ps,
-                type=type,
                 query_file=query_path,
                 data_file=data_path,
                 s=fetch_strategy,
+                cold_start_correction=cold_start_correction,
             )
         elif mode == "range":
             c, _h = range_cost_function(
@@ -106,6 +107,7 @@ def compute_model_costs_per_query(
                 ps,
                 query_file=query_path,
                 data_file=data_path,
+                cold_start_correction=cold_start_correction,
             )
         else:
             raise ValueError(f"Unknown mode: {mode}")
@@ -182,6 +184,7 @@ def fit_additive_residual_model_global(
     max_eps: int = 64,
     eps0: float = 1.0,
     ridge_lambda: float = 1e-2,
+    cold_start_correction: bool = False,
     # 下面两个开关用于“口径对齐”
     real_is_total: bool = False,
     num_queries: int = 0,
@@ -212,6 +215,7 @@ def fit_additive_residual_model_global(
             query_file=query_file,
             fetch_strategy=fetch_strategy,
             mode=mode,
+            cold_start_correction=cold_start_correction,
         )
 
         # 加性残差（per query）
@@ -327,6 +331,7 @@ def evaluate_holdout_memory_budget(
     mode: str = "point",
     max_eps: int = 64,
     eps0: float = 1.0,
+    cold_start_correction: bool = False,
     # 口径对齐
     real_is_total: bool = False,
     num_queries: int = 0,
@@ -352,6 +357,7 @@ def evaluate_holdout_memory_budget(
         query_file=query_file,
         fetch_strategy=fetch_strategy,
         mode=mode,
+        cold_start_correction=cold_start_correction,
     )
 
     # 校正：加性残差
@@ -469,7 +475,7 @@ def run_books10m_additive_calibration_and_revision():
         estimated_is_total=estimated_is_total,
         num_queries=num_queries_est,
         assume_M_unit="MiB",
-        ratio_field="residual",      # ratio 写 r_pred；若你要保留原 ratio 改 "keep_original"
+        ratio_field="residual",    
     )
 
 

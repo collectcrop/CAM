@@ -1,0 +1,1120 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+
+SUPPORTED_BRANCH_FACTORS = [
+    64,
+    128,
+    256,
+    512,
+    1024,
+    2048,
+    4096,
+    8192,
+    16384,
+    32768,
+    65536,
+    131072,
+    262144,
+    524288,
+    1048576,
+    2097152,
+]
+
+DEFAULT_BRANCH_FACTORS = SUPPORTED_BRANCH_FACTORS[2:]
+
+
+def default_python_bin() -> str:
+    env_python = os.environ.get("PYTHON_BIN")
+    if env_python:
+        return env_python
+    conda_python = Path.home() / "miniconda3/bin/python"
+    if conda_python.exists():
+        return str(conda_python)
+    return sys.executable
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compare a CDFShop optimizer-selected RMI branch factor against "
+            "an optimalBF-selected branch factor under the same memory budget."
+        )
+    )
+    parser.add_argument("--data", required=True, help="Dataset path or filename under --datasets-directory.")
+    parser.add_argument("--queries", required=True, help="Query path or filename under --datasets-directory.")
+    parser.add_argument("--keys", type=int, default=0, help="Number of data keys. Default: infer from --data.")
+    parser.add_argument("--M", type=int, required=True, help="Total memory budget in MiB.")
+    parser.add_argument(
+        "--candidate-bfs",
+        default=",".join(str(x) for x in DEFAULT_BRANCH_FACTORS),
+        help="Candidate branch factors for optimalBF. Supports comma lists and ranges.",
+    )
+    parser.add_argument(
+        "--cdfshop-cache-ratios",
+        default="0.25,0.50,0.75",
+        help=(
+            "Comma-separated cache-buffer fractions for CDFShop baselines. "
+            "The remaining memory is the optimizer index-size upper bound."
+        ),
+    )
+    parser.add_argument("--datasets-directory", default="/mnt/data/Dataset/public/SOSD")
+    parser.add_argument("--rmi-bin", default="./build/rmi_bench")
+    parser.add_argument("--python-bin", default=default_python_bin())
+    parser.add_argument("--rmi-directory", default="src/rmi", help="CDFShop/RMI cargo project directory.")
+    parser.add_argument("--rmi-data-dir", default="src/rmi/rmi_data", help="Directory containing generated RMI parameter files.")
+    parser.add_argument(
+        "--rmi-results-dir",
+        default="src/rmi/rmi_eval/results",
+        help="Directory containing per-BF RMI collector CSVs for optimalBF.",
+    )
+    parser.add_argument(
+        "--rmi-name-prefix",
+        default="books_rmi_linear_spline_linear",
+        help="Prefix for collector CSVs, e.g. '<prefix>_<BF>.csv'.",
+    )
+    parser.add_argument("--output-dir", default="build/log/rmi_tuner_cache_compare")
+    parser.add_argument("--dataset-tag", default=None)
+    parser.add_argument("--policies", default="FIFO,LRU,LFU")
+    parser.add_argument("--strategies", default="all_in_once")
+    parser.add_argument("--tuning-policy", default="LRU", help="Policy used to choose the optimalBF branch factor.")
+    parser.add_argument("--query-limit", type=int, default=0)
+    parser.add_argument("--header", default="auto", choices=["auto", "yes", "no"])
+    parser.add_argument("--ipp", type=int, default=512)
+    parser.add_argument("--page-size", type=int, default=4096)
+    parser.add_argument(
+        "--estimate-mode",
+        default="global",
+        choices=["global", "leafwise"],
+        help="optimalBF estimation mode.",
+    )
+    parser.add_argument(
+        "--eps-transform",
+        default="cap",
+        choices=["none", "cap", "logcap", "power"],
+        help="optimalBF epsilon transform for global mode.",
+    )
+    parser.add_argument("--eps-transform-q", type=float, default=0.9)
+    parser.add_argument("--eps-transform-alpha", type=float, default=0.5)
+    parser.add_argument(
+        "--optimizer-data",
+        default=None,
+        help=(
+            "Input for CDFShop --optimize. Defaults to --data. The RMI loader "
+            "expects an 8-byte count header."
+        ),
+    )
+    parser.add_argument(
+        "--optimizer-output",
+        default=None,
+        help="Path for CDFShop optimizer JSON. Defaults inside the run output directory.",
+    )
+    parser.add_argument("--optimizer-threads", type=int, default=0)
+    parser.add_argument(
+        "--optimizer-profile",
+        default="",
+        help="Optional RMI_OPTIMIZER_PROFILE value, e.g. fast, memory, disk.",
+    )
+    parser.add_argument("--force-optimizer", action="store_true", help="Regenerate optimizer JSON even if it exists.")
+    parser.add_argument("--skip-optimizer", action="store_true", help="Reuse an existing optimizer JSON.")
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args()
+
+
+def parse_int_list(value: str) -> list[int]:
+    out: list[int] = []
+    normalized = value.replace(" ", ",")
+    for token in normalized.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            parts = [part.strip() for part in token.split("-")]
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                raise ValueError(f"invalid range token: {token}")
+            start = int(parts[0])
+            end = int(parts[1])
+            step = 1 if end >= start else -1
+            out.extend(range(start, end + step, step))
+        else:
+            out.append(int(token))
+    if not out:
+        raise ValueError("empty integer list")
+    return list(dict.fromkeys(out))
+
+
+def parse_float_list(value: str) -> list[float]:
+    out: list[float] = []
+    for token in value.replace(" ", ",").split(","):
+        token = token.strip()
+        if token:
+            out.append(float(token))
+    if not out:
+        raise ValueError("empty float list")
+    return out
+
+
+def resolve_input(path_text: str, datasets_directory: Path) -> Path:
+    path = Path(path_text).expanduser()
+    if path.exists():
+        return path.resolve()
+    if not path.is_absolute():
+        candidate = datasets_directory / path
+        if candidate.exists():
+            return candidate.resolve()
+    raise FileNotFoundError(path_text)
+
+
+def resolve_optimizer_input(path_text: str, repo_root: Path, rmi_dir: Path, datasets_directory: Path) -> Path:
+    path = Path(path_text).expanduser()
+    if path.exists():
+        return path.resolve()
+    if not path.is_absolute():
+        for base in (rmi_dir, repo_root, datasets_directory):
+            candidate = base / path
+            if candidate.exists():
+                return candidate.resolve()
+    raise FileNotFoundError(path_text)
+
+
+def resolve_executable(path_text: str, repo_root: Path) -> Path:
+    path = Path(path_text).expanduser()
+    if path.is_absolute() or path.exists():
+        return path
+    return repo_root / path
+
+
+def infer_key_count(path: Path, header_mode: str) -> int:
+    size = path.stat().st_size
+    if size < 8 or size % 8 != 0:
+        raise ValueError(f"dataset size is not a positive multiple of uint64: {path}")
+    total_u64 = size // 8
+
+    if header_mode == "no":
+        return total_u64
+
+    with path.open("rb") as f:
+        header = struct.unpack("<Q", f.read(8))[0]
+
+    if header_mode == "yes":
+        return int(header)
+
+    if header + 1 == total_u64:
+        return int(header)
+    return total_u64
+
+
+def normalize_csv(value: str) -> str:
+    return ",".join(token.strip() for token in value.replace(" ", ",").split(",") if token.strip())
+
+
+def run_command(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    log_path: Path | None = None,
+    stdout_path: Path | None = None,
+    dry_run: bool = False,
+) -> str:
+    printable = " ".join(cmd)
+    if cwd is not None:
+        print(f"[*] (cd {cwd} && {printable})")
+    else:
+        print(f"[*] {printable}")
+    if dry_run:
+        return ""
+
+    result = subprocess.run(
+        cmd,
+        cwd=str(cwd) if cwd is not None else None,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    output = result.stdout + result.stderr
+    if stdout_path is not None:
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        stdout_path.write_text(result.stdout)
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(output)
+    if result.returncode != 0:
+        raise RuntimeError(f"command failed with code {result.returncode}: {printable}\n{output}")
+    return output
+
+
+def fmt_seconds(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.6f}"
+
+
+def load_rmi_result_meta(path: Path, delimiter: str = ",") -> dict[str, str]:
+    meta: dict[str, str] = {}
+    with path.open("r", newline="") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if not line.startswith("#"):
+                break
+            payload = line[1:]
+            parts = payload.split(delimiter, 1)
+            if len(parts) != 2:
+                continue
+            key = parts[0].strip().lower()
+            value = parts[1].strip()
+            if key:
+                meta[key] = value
+    return meta
+
+
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def run_cdfshop_optimizer(
+    rmi_dir: Path,
+    optimizer_data: Path,
+    optimizer_output: Path,
+    optimizer_threads: int,
+    optimizer_profile: str,
+    force: bool,
+    skip: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    log_path = optimizer_output.with_suffix(".log")
+    timing: dict[str, Any] = {
+        "selector": "CDFShop",
+        "tuning_time_s": "",
+        "tuning_time_source": "",
+        "cached": 0,
+        "log_path": str(log_path),
+    }
+    if skip:
+        if not optimizer_output.exists() and not dry_run:
+            raise FileNotFoundError(f"--skip-optimizer requested but JSON does not exist: {optimizer_output}")
+        print(f"[*] reuse CDFShop optimizer JSON: {optimizer_output}")
+        timing["cached"] = 1
+        timing["tuning_time_source"] = "reused_optimizer_json"
+        return timing
+
+    if optimizer_output.exists() and not force:
+        print(f"[*] reuse existing CDFShop optimizer JSON: {optimizer_output}")
+        timing["cached"] = 1
+        timing["tuning_time_source"] = "reused_optimizer_json"
+        return timing
+
+    optimizer_output.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "cargo",
+        "run",
+        "--release",
+        "--",
+        "--optimize",
+        str(optimizer_output),
+    ]
+    if optimizer_threads > 0:
+        cmd.extend(["--threads", str(optimizer_threads)])
+    cmd.append(str(optimizer_data))
+
+    env = os.environ.copy()
+    if optimizer_profile:
+        env["RMI_OPTIMIZER_PROFILE"] = optimizer_profile
+
+    t0 = time.perf_counter()
+    run_command(
+        cmd,
+        cwd=rmi_dir,
+        env=env,
+        log_path=log_path,
+        dry_run=dry_run,
+    )
+    elapsed_s = None if dry_run else time.perf_counter() - t0
+    timing["tuning_time_s"] = fmt_seconds(elapsed_s)
+    timing["tuning_time_source"] = "wall_clock_cargo_run"
+    return timing
+
+
+def as_float(value: Any, default: float = float("inf")) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def as_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def load_optimizer_configs(path: Path) -> list[dict[str, Any]]:
+    with path.open() as f:
+        payload = json.load(f)
+    configs = payload.get("configs", payload if isinstance(payload, list) else [])
+    if not isinstance(configs, list):
+        raise ValueError(f"unexpected optimizer JSON shape in {path}")
+
+    rows: list[dict[str, Any]] = []
+    for idx, cfg in enumerate(configs):
+        if not isinstance(cfg, dict):
+            continue
+        branch = as_int(cfg.get("branching factor", cfg.get("branch_factor")), -1)
+        if branch <= 0:
+            continue
+        rows.append(
+            {
+                "optimizer_rank": idx,
+                "layers": cfg.get("layers", ""),
+                "branch_factor": branch,
+                "namespace": cfg.get("namespace", ""),
+                "optimizer_size_bytes": as_int(cfg.get("size", cfg.get("size binary search")), 0),
+                "average_log2_error": as_float(cfg.get("average log2 error")),
+                "max_log2_error": as_float(cfg.get("max log2 error")),
+                "binary": cfg.get("binary", ""),
+            }
+        )
+    if not rows:
+        raise ValueError(f"no usable optimizer configs found in {path}")
+    return rows
+
+
+def choose_cdfshop_configs(
+    configs: list[dict[str, Any]],
+    memory_bytes: int,
+    cache_ratios: list[float],
+    supported_bfs: set[int],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    annotated: list[dict[str, Any]] = []
+    choices: list[dict[str, Any]] = []
+
+    for ratio in cache_ratios:
+        if ratio < 0.0 or ratio >= 1.0:
+            raise ValueError(f"CDFShop cache ratio must be in [0, 1): {ratio}")
+        cache_bytes = int(round(memory_bytes * ratio))
+        index_budget_bytes = memory_bytes - cache_bytes
+        feasible_rows: list[dict[str, Any]] = []
+
+        for cfg in configs:
+            row = dict(cfg)
+            size = int(row["optimizer_size_bytes"])
+            branch = int(row["branch_factor"])
+            row["cache_ratio"] = ratio
+            row["cache_bytes"] = cache_bytes
+            row["index_budget_bytes"] = index_budget_bytes
+            row["fits_index_budget"] = int(size <= index_budget_bytes)
+            row["supported_by_rmi_bench"] = int(branch in supported_bfs)
+            row["selected"] = 0
+            annotated.append(row)
+            if row["fits_index_budget"] and row["supported_by_rmi_bench"]:
+                feasible_rows.append(row)
+
+        if not feasible_rows:
+            raise RuntimeError(
+                "no CDFShop optimizer config both fits the CDFShop index budget "
+                f"and is supported by rmi_bench for cache_ratio={ratio:g} "
+                f"(index_budget_bytes={index_budget_bytes})"
+            )
+
+        best = max(
+            feasible_rows,
+            key=lambda row: (
+                int(row["branch_factor"]),
+                -float(row["average_log2_error"]),
+                -int(row["optimizer_size_bytes"]),
+            ),
+        )
+        best["selected"] = 1
+        choices.append(dict(best))
+
+    return choices, annotated
+
+def limit_rmi_records(src: Path, dst: Path, limit: int, dry_run: bool) -> Path:
+    if limit <= 0:
+        return src
+    if dst.exists() and not dry_run:
+        return dst
+
+    print(f"[*] limit RMI records: {src} -> {dst} ({limit} rows)")
+    if dry_run:
+        return dst
+
+    comments: list[str] = []
+    header: str | None = None
+    rows: list[str] = []
+    with src.open("r", encoding="utf-8", newline="") as f:
+        for line in f:
+            if line.startswith("#"):
+                comments.append(line)
+                continue
+            header = line
+            break
+        if header is None:
+            raise ValueError(f"{src} does not contain a CSV header")
+        for line in f:
+            if not line.strip():
+                continue
+            rows.append(line)
+            if len(rows) >= limit:
+                break
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    wrote_num_queries = False
+    with dst.open("w", encoding="utf-8", newline="") as f:
+        for line in comments:
+            if line.startswith("#num_queries,"):
+                f.write(f"#num_queries,{len(rows)}\n")
+                wrote_num_queries = True
+            else:
+                f.write(line)
+        if not wrote_num_queries:
+            f.write(f"#num_queries,{len(rows)}\n")
+        f.write(header)
+        f.writelines(rows)
+    return dst
+
+
+def prepare_record_path(
+    results_dir: Path,
+    output_dir: Path,
+    rmi_prefix: str,
+    branch_factor: int,
+    query_limit: int,
+    dry_run: bool,
+) -> Path:
+    src = results_dir / f"{rmi_prefix}_{branch_factor}.csv"
+    if not src.exists() and not dry_run:
+        raise FileNotFoundError(
+            f"missing RMI collector CSV for BF={branch_factor}: {src}. "
+            "Generate it before running optimalBF selection."
+        )
+    if query_limit <= 0:
+        return src
+    dst = output_dir / "records_limited" / f"{rmi_prefix}_{branch_factor}_q{query_limit}.csv"
+    return limit_rmi_records(src, dst, query_limit, dry_run)
+
+
+def validate_rmi_records_for_dataset(
+    results_dir: Path,
+    rmi_prefix: str,
+    branch_factors: list[int],
+    n_records: int,
+) -> None:
+    errors: list[str] = []
+    for bf in branch_factors:
+        record_path = results_dir / f"{rmi_prefix}_{bf}.csv"
+        if not record_path.exists():
+            errors.append(f"BF={bf}: missing {record_path}")
+            continue
+        meta = load_rmi_result_meta(record_path)
+        num_data = as_int(meta.get("num_data"), 0)
+        if num_data and num_data != n_records:
+            errors.append(
+                f"BF={bf}: {record_path} has #num_data={num_data}, expected {n_records}"
+            )
+
+    if errors:
+        shown = "\n".join(f"- {item}" for item in errors[:16])
+        if len(errors) > 16:
+            shown += f"\n- ... {len(errors) - 16} more"
+        raise RuntimeError(
+            "RMI record validation failed before running tuning commands:\n"
+            f"{shown}\n"
+            "Regenerate matching records for this dataset, or point --rmi-results-dir "
+            "to a directory whose collector CSVs all have matching #num_data metadata. "
+            "For 200M books, run exp/generate_rmi_headers.sh with TRAIN_DATA_PATH "
+            "pointing to the headered data and COLLECT_DATA_PATH/COLLECT_DATA_HEADER "
+            "matching the benchmark data."
+        )
+
+
+def run_optimalbf_for_candidates(
+    repo_root: Path,
+    python_bin: Path,
+    results_dir: Path,
+    output_dir: Path,
+    rmi_prefix: str,
+    branch_factors: list[int],
+    n_records: int,
+    memory_mib: int,
+    memory_bytes: int,
+    ipp: int,
+    page_size: int,
+    strategy: str,
+    policies_csv: str,
+    estimate_mode: str,
+    eps_transform: str,
+    eps_transform_q: float,
+    eps_transform_alpha: float,
+    query_limit: int,
+    dry_run: bool,
+) -> tuple[Path, list[dict[str, Any]], dict[str, Any]]:
+    t_total = time.perf_counter()
+    estimate_log = output_dir / "rmi_optimalbf_summary.csv"
+    if estimate_log.exists() and not dry_run:
+        estimate_log.unlink()
+
+    metadata_rows: list[dict[str, Any]] = []
+    subprocess_time_s = 0.0
+    attempted_candidates = 0
+    skipped_candidates = 0
+    prepared_records: dict[int, tuple[Path, dict[str, str]]] = {}
+    record_errors: list[str] = []
+
+    for bf in branch_factors:
+        try:
+            record_path = prepare_record_path(
+                results_dir=results_dir,
+                output_dir=output_dir,
+                rmi_prefix=rmi_prefix,
+                branch_factor=bf,
+                query_limit=query_limit,
+                dry_run=dry_run,
+            )
+        except FileNotFoundError as exc:
+            record_errors.append(str(exc))
+            continue
+
+        meta = load_rmi_result_meta(record_path) if record_path.exists() else {}
+        num_data = as_int(meta.get("num_data"), 0)
+        if num_data and num_data != n_records:
+            record_errors.append(
+                f"BF={bf}: {record_path} has #num_data={num_data}, expected {n_records}"
+            )
+            continue
+        prepared_records[bf] = (record_path, meta)
+
+    if record_errors:
+        shown = "\n".join(f"- {item}" for item in record_errors[:16])
+        if len(record_errors) > 16:
+            shown += f"\n- ... {len(record_errors) - 16} more"
+        raise RuntimeError(
+            "RMI record validation failed before running optimalBF:\n"
+            f"{shown}\n"
+            "Regenerate matching records for this dataset, or point --rmi-results-dir "
+            "to a directory whose collector CSVs all have matching #num_data metadata. "
+            "For 200M books, run exp/generate_rmi_headers.sh with TRAIN_DATA_PATH "
+            "pointing to the headered data and COLLECT_DATA_PATH/COLLECT_DATA_HEADER "
+            "matching the benchmark data."
+        )
+
+    for bf in branch_factors:
+        record_path, meta = prepared_records[bf]
+        rmi_size = as_int(meta.get("rmi_size"), 0)
+        cache_bytes = max(0, memory_bytes - rmi_size) if rmi_size > 0 else ""
+        feasible = int(rmi_size <= memory_bytes) if rmi_size > 0 else 1
+        metadata_rows.append(
+            {
+                "branch_factor": bf,
+                "records_path": str(record_path),
+                "rmi_size_bytes": rmi_size,
+                "cache_bytes": cache_bytes,
+                "feasible": feasible,
+                "skip_reason": "" if feasible else "rmi_size_exceeds_memory_budget",
+            }
+        )
+        if not feasible:
+            skipped_candidates += 1
+            print(f"[*] skip BF={bf}: RMI size {rmi_size} > memory budget {memory_bytes}")
+            continue
+
+        attempted_candidates += 1
+        npz_out = output_dir / "npz" / f"{rmi_prefix}_{bf}_M{memory_mib}_optimalBF.npz"
+        cmd = [
+            str(python_bin),
+            str(repo_root / "utils/optimalBF.py"),
+            str(record_path),
+            str(n_records),
+            "--ipp",
+            str(ipp),
+            "--strategy",
+            strategy,
+            "--memory-mib",
+            str(memory_mib),
+            "--page-size",
+            str(page_size),
+            "--policies",
+            policies_csv,
+            "--header-mode",
+            "branch_factor",
+            "--log-path",
+            str(estimate_log),
+            "--out",
+            str(npz_out),
+            "--mode",
+            estimate_mode,
+            "--eps-transform",
+            eps_transform,
+            "--eps-transform-q",
+            str(eps_transform_q),
+            "--eps-transform-alpha",
+            str(eps_transform_alpha),
+        ]
+        t_cmd = time.perf_counter()
+        run_command(cmd, cwd=repo_root, dry_run=dry_run)
+        elapsed_cmd_s = 0.0 if dry_run else time.perf_counter() - t_cmd
+        subprocess_time_s += elapsed_cmd_s
+        metadata_rows[-1]["optimalbf_command_time_s"] = fmt_seconds(None if dry_run else elapsed_cmd_s)
+
+    total_elapsed_s = None if dry_run else time.perf_counter() - t_total
+    timing = {
+        "selector": "optimalBF",
+        "tuning_time_s": fmt_seconds(total_elapsed_s),
+        "tuning_time_source": "wall_clock_all_candidates",
+        "optimalbf_subprocess_time_s": fmt_seconds(None if dry_run else subprocess_time_s),
+        "attempted_candidates": attempted_candidates,
+        "skipped_candidates": skipped_candidates,
+        "candidate_count": len(branch_factors),
+        "estimate_log": str(estimate_log),
+    }
+    return estimate_log, metadata_rows, timing
+
+
+def merge_optimalbf_cost_rows(
+    estimate_log: Path,
+    metadata_rows: list[dict[str, Any]],
+    output_csv: Path,
+    dry_run: bool,
+) -> list[dict[str, Any]]:
+    by_bf = {int(row["branch_factor"]): row for row in metadata_rows}
+    rows: list[dict[str, Any]] = []
+    if estimate_log.exists() and not dry_run:
+        for row in read_csv_rows(estimate_log):
+            bf = as_int(row.get("branch_factor"), -1)
+            combined = dict(by_bf.get(bf, {}))
+            combined.update(row)
+            combined["feasible"] = combined.get("feasible", 1)
+            rows.append(combined)
+
+    logged_bfs = {as_int(row.get("branch_factor"), -1) for row in rows}
+    for meta in metadata_rows:
+        if int(meta["branch_factor"]) not in logged_bfs:
+            rows.append(dict(meta))
+
+    write_csv(output_csv, rows)
+    return rows
+
+
+def choose_optimalbf_branch(
+    rows: list[dict[str, Any]],
+    tuning_policy: str,
+) -> dict[str, Any]:
+    policy = tuning_policy.upper()
+    candidates = [
+        row for row in rows
+        if as_int(row.get("feasible"), 1)
+        and str(row.get("policy", "")).upper() == policy
+        and row.get("cost", "") != ""
+    ]
+    if not candidates:
+        raise RuntimeError(f"no feasible optimalBF estimate rows for policy={policy}")
+    return min(candidates, key=lambda row: (as_float(row.get("cost")), as_int(row.get("branch_factor"))))
+
+
+def run_rmi_bench(
+    rmi_bin: Path,
+    data_path: Path,
+    query_path: Path,
+    rmi_data_dir: Path,
+    keys: int,
+    memory_mib: int,
+    branch_factors: list[int],
+    policies_csv: str,
+    strategies_csv: str,
+    header_mode: str,
+    query_limit: int,
+    output_csv: Path,
+    dry_run: bool,
+    cache_bytes: int | None = None,
+) -> None:
+    cmd = [
+        str(rmi_bin),
+        "--data",
+        str(data_path),
+        "--queries",
+        str(query_path),
+        "--rmi-data-dir",
+        str(rmi_data_dir),
+        "--keys",
+        str(keys),
+        "--M",
+        str(memory_mib),
+        "--header",
+        header_mode,
+        "--strategies",
+        strategies_csv,
+        "--policies",
+        policies_csv,
+        "--branch-factors",
+        ",".join(str(bf) for bf in branch_factors),
+    ]
+    if query_limit > 0:
+        cmd.extend(["--query-limit", str(query_limit)])
+    if cache_bytes is not None:
+        cmd.extend(["--cache-bytes", str(cache_bytes)])
+    run_command(cmd, stdout_path=output_csv, dry_run=dry_run)
+
+
+def run_tag(meta: dict[str, Any], index: int) -> str:
+    selector = str(meta.get("selector", "run")).lower()
+    ratio = meta.get("cache_ratio", "")
+    branch = meta.get("branch_factor", "bf")
+    parts = [f"{index:02d}", selector]
+    if ratio != "":
+        parts.append(f"cache{int(round(float(ratio) * 100)):02d}")
+    parts.append(f"bf{branch}")
+    return "_".join(parts)
+
+
+def assign_summary_paths(run_metadata: list[dict[str, Any]], output_dir: Path) -> None:
+    for index, meta in enumerate(run_metadata):
+        if str(meta.get("branch_factor", "")).isdigit():
+            meta["summary_path"] = str(output_dir / f"{run_tag(meta, index)}_summary.csv")
+
+
+def build_comparison_summary(
+    run_metadata: list[dict[str, Any]],
+    output_csv: Path,
+    dry_run: bool,
+) -> None:
+    if dry_run:
+        return
+
+    rows: list[dict[str, Any]] = []
+    for meta in run_metadata:
+        summary_text = str(meta.get("summary_path", ""))
+        if not summary_text:
+            continue
+        summary_path = Path(summary_text)
+        if not summary_path.exists():
+            continue
+        for row in read_csv_rows(summary_path):
+            combined = dict(meta)
+            combined.update(row)
+            rows.append(combined)
+    write_csv(output_csv, rows)
+
+
+def write_combined_actual_summary(
+    run_metadata: list[dict[str, Any]],
+    output_csv: Path,
+    dry_run: bool,
+) -> None:
+    if dry_run:
+        return
+
+    rows: list[dict[str, Any]] = []
+    for meta in run_metadata:
+        summary_text = str(meta.get("summary_path", ""))
+        if not summary_text:
+            continue
+        summary_path = Path(summary_text)
+        if summary_path.exists():
+            rows.extend(read_csv_rows(summary_path))
+    write_csv(output_csv, rows)
+
+def main() -> None:
+    args = parse_args()
+    repo_root = Path(__file__).resolve().parents[1]
+    datasets_directory = Path(args.datasets_directory).expanduser()
+    data_path = resolve_input(args.data, datasets_directory)
+    query_path = resolve_input(args.queries, datasets_directory)
+    keys = int(args.keys or infer_key_count(data_path, args.header))
+    memory_bytes = int(args.M) * 1024 * 1024
+
+    candidate_bfs = parse_int_list(args.candidate_bfs)
+    cache_ratios = parse_float_list(args.cdfshop_cache_ratios)
+    supported_bfs = set(SUPPORTED_BRANCH_FACTORS)
+    unsupported = [bf for bf in candidate_bfs if bf not in supported_bfs]
+    if unsupported:
+        raise RuntimeError(
+            f"candidate BFs are not compiled into exp/rmi_bench.cpp: {unsupported}. "
+            "Regenerate/update rmi_bench before using them."
+        )
+
+    policies_csv = normalize_csv(args.policies)
+    strategies_csv = normalize_csv(args.strategies)
+    strategy_for_estimate = strategies_csv.split(",")[0]
+    if strategy_for_estimate.lower() == "all":
+        strategy_for_estimate = "all_in_once"
+
+    dataset_tag = args.dataset_tag or data_path.stem
+    output_dir = (Path(args.output_dir).resolve() / f"{dataset_tag}_M{args.M}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    rmi_dir = (repo_root / args.rmi_directory).resolve() if not Path(args.rmi_directory).is_absolute() else Path(args.rmi_directory)
+    rmi_bin = resolve_executable(args.rmi_bin, repo_root)
+    python_bin = Path(args.python_bin).expanduser()
+    rmi_data_dir = (repo_root / args.rmi_data_dir).resolve() if not Path(args.rmi_data_dir).is_absolute() else Path(args.rmi_data_dir)
+    rmi_results_dir = (repo_root / args.rmi_results_dir).resolve() if not Path(args.rmi_results_dir).is_absolute() else Path(args.rmi_results_dir)
+
+    validate_rmi_records_for_dataset(
+        results_dir=rmi_results_dir,
+        rmi_prefix=args.rmi_name_prefix,
+        branch_factors=candidate_bfs,
+        n_records=keys,
+    )
+
+    optimizer_data_text = args.optimizer_data or str(data_path)
+    optimizer_data = resolve_optimizer_input(optimizer_data_text, repo_root, rmi_dir, datasets_directory)
+    optimizer_output = (
+        Path(args.optimizer_output).expanduser()
+        if args.optimizer_output
+        else output_dir / "cdfshop_optimizer_out.json"
+    )
+    if not optimizer_output.is_absolute():
+        optimizer_output = (repo_root / optimizer_output).resolve()
+
+    cdfshop_timing = run_cdfshop_optimizer(
+        rmi_dir=rmi_dir,
+        optimizer_data=optimizer_data,
+        optimizer_output=optimizer_output,
+        optimizer_threads=args.optimizer_threads,
+        optimizer_profile=args.optimizer_profile,
+        force=args.force_optimizer,
+        skip=args.skip_optimizer,
+        dry_run=args.dry_run,
+    )
+
+    run_metadata: list[dict[str, Any]] = []
+    if optimizer_output.exists() and not args.dry_run:
+        optimizer_configs = load_optimizer_configs(optimizer_output)
+        cdfshop_choices, cdfshop_rows = choose_cdfshop_configs(
+            optimizer_configs,
+            memory_bytes=memory_bytes,
+            cache_ratios=cache_ratios,
+            supported_bfs=supported_bfs,
+        )
+        cdfshop_csv = output_dir / "cdfshop_candidate_configs.csv"
+        write_csv(cdfshop_csv, cdfshop_rows)
+        warned_layers: set[str] = set()
+        for cdfshop_choice in cdfshop_choices:
+            cdfshop_bf = int(cdfshop_choice["branch_factor"])
+            print(
+                "[+] CDFShop branch_factor="
+                f"{cdfshop_bf} cache_ratio={float(cdfshop_choice['cache_ratio']):g} "
+                f"index_budget={cdfshop_choice['index_budget_bytes']} "
+                f"size={cdfshop_choice['optimizer_size_bytes']} "
+                f"layers={cdfshop_choice.get('layers', '')}"
+            )
+            layers = str(cdfshop_choice.get("layers", ""))
+            if layers and layers != "linear_spline,linear" and layers not in warned_layers:
+                warned_layers.add(layers)
+                print(
+                    "[*] CDFShop selected layers differ from the generated rmi_bench prefix; "
+                    "the actual IO comparison uses the selected BF with the compiled RMI model set."
+                )
+            run_metadata.append(
+                {
+                    "selector": "CDFShop",
+                    "branch_factor": cdfshop_bf,
+                    "cache_ratio": cdfshop_choice["cache_ratio"],
+                    "fixed_cache_bytes": cdfshop_choice["cache_bytes"],
+                    "cdfshop_index_budget_bytes": cdfshop_choice["index_budget_bytes"],
+                    "optimizer_size_bytes": cdfshop_choice["optimizer_size_bytes"],
+                    "optimizer_layers": cdfshop_choice.get("layers", ""),
+                    "optimizer_json": str(optimizer_output),
+                    "tuning_time_s": cdfshop_timing.get("tuning_time_s", ""),
+                    "tuning_time_source": cdfshop_timing.get("tuning_time_source", ""),
+                    "tuning_time_cached": cdfshop_timing.get("cached", ""),
+                    "optimizer_log": cdfshop_timing.get("log_path", ""),
+                }
+            )
+    else:
+        for ratio in cache_ratios:
+            cache_bytes = int(round(memory_bytes * ratio))
+            run_metadata.append(
+                {
+                    "selector": "CDFShop",
+                    "branch_factor": "<from_optimizer>",
+                    "cache_ratio": ratio,
+                    "fixed_cache_bytes": cache_bytes,
+                    "cdfshop_index_budget_bytes": memory_bytes - cache_bytes,
+                    "optimizer_json": str(optimizer_output),
+                    "tuning_time_s": cdfshop_timing.get("tuning_time_s", ""),
+                    "tuning_time_source": cdfshop_timing.get("tuning_time_source", ""),
+                    "tuning_time_cached": cdfshop_timing.get("cached", ""),
+                    "optimizer_log": cdfshop_timing.get("log_path", ""),
+                }
+            )
+
+    estimate_log, metadata_rows, optimalbf_timing = run_optimalbf_for_candidates(
+        repo_root=repo_root,
+        python_bin=python_bin,
+        results_dir=rmi_results_dir,
+        output_dir=output_dir,
+        rmi_prefix=args.rmi_name_prefix,
+        branch_factors=candidate_bfs,
+        n_records=keys,
+        memory_mib=args.M,
+        memory_bytes=memory_bytes,
+        ipp=args.ipp,
+        page_size=args.page_size,
+        strategy=strategy_for_estimate,
+        policies_csv=policies_csv,
+        estimate_mode=args.estimate_mode,
+        eps_transform=args.eps_transform,
+        eps_transform_q=args.eps_transform_q,
+        eps_transform_alpha=args.eps_transform_alpha,
+        query_limit=args.query_limit,
+        dry_run=args.dry_run,
+    )
+    candidate_costs_csv = output_dir / "rmi_candidate_costs.csv"
+    optimalbf_rows = merge_optimalbf_cost_rows(
+        estimate_log=estimate_log,
+        metadata_rows=metadata_rows,
+        output_csv=candidate_costs_csv,
+        dry_run=args.dry_run,
+    )
+
+    if not args.dry_run:
+        optimalbf_choice = choose_optimalbf_branch(optimalbf_rows, args.tuning_policy)
+        optimalbf_bf = int(optimalbf_choice["branch_factor"])
+        print(
+            "[+] optimalBF branch_factor="
+            f"{optimalbf_bf} policy={args.tuning_policy.upper()} "
+            f"cost={optimalbf_choice.get('cost')}"
+        )
+        run_metadata.append(
+            {
+                "selector": "optimalBF",
+                "branch_factor": optimalbf_bf,
+                "tuning_policy": args.tuning_policy.upper(),
+                "estimated_cost": optimalbf_choice.get("cost", ""),
+                "estimated_total_ios": optimalbf_choice.get("estimated_total_ios", ""),
+                "estimate_log": str(estimate_log),
+                "tuning_time_s": optimalbf_timing.get("tuning_time_s", ""),
+                "tuning_time_source": optimalbf_timing.get("tuning_time_source", ""),
+                "optimalbf_subprocess_time_s": optimalbf_timing.get("optimalbf_subprocess_time_s", ""),
+                "attempted_candidates": optimalbf_timing.get("attempted_candidates", ""),
+                "skipped_candidates": optimalbf_timing.get("skipped_candidates", ""),
+                "candidate_count": optimalbf_timing.get("candidate_count", ""),
+            }
+        )
+    else:
+        run_metadata.append(
+            {
+                "selector": "optimalBF",
+                "branch_factor": "<from_optimalBF>",
+                "tuning_policy": args.tuning_policy.upper(),
+                "estimate_log": str(estimate_log),
+                "tuning_time_s": optimalbf_timing.get("tuning_time_s", ""),
+                "tuning_time_source": optimalbf_timing.get("tuning_time_source", ""),
+                "optimalbf_subprocess_time_s": optimalbf_timing.get("optimalbf_subprocess_time_s", ""),
+                "attempted_candidates": optimalbf_timing.get("attempted_candidates", ""),
+                "skipped_candidates": optimalbf_timing.get("skipped_candidates", ""),
+                "candidate_count": optimalbf_timing.get("candidate_count", ""),
+            }
+        )
+
+    assign_summary_paths(run_metadata, output_dir)
+
+    timing_path = output_dir / "tuning_time_summary.csv"
+    write_csv(
+        timing_path,
+        [
+            {
+                "selector": "CDFShop",
+                "tuning_time_s": cdfshop_timing.get("tuning_time_s", ""),
+                "tuning_time_source": cdfshop_timing.get("tuning_time_source", ""),
+                "cached": cdfshop_timing.get("cached", ""),
+                "log_path": cdfshop_timing.get("log_path", ""),
+                "optimizer_threads": args.optimizer_threads,
+                "optimizer_profile": args.optimizer_profile,
+            },
+            {
+                "selector": "optimalBF",
+                "tuning_time_s": optimalbf_timing.get("tuning_time_s", ""),
+                "tuning_time_source": optimalbf_timing.get("tuning_time_source", ""),
+                "cached": 0,
+                "log_path": optimalbf_timing.get("estimate_log", ""),
+                "optimalbf_subprocess_time_s": optimalbf_timing.get("optimalbf_subprocess_time_s", ""),
+                "candidate_count": optimalbf_timing.get("candidate_count", ""),
+                "attempted_candidates": optimalbf_timing.get("attempted_candidates", ""),
+                "skipped_candidates": optimalbf_timing.get("skipped_candidates", ""),
+            },
+        ],
+    )
+
+    plan_path = output_dir / "experiment_plan.csv"
+    write_csv(plan_path, run_metadata)
+
+    if not args.dry_run:
+        actual_csv = output_dir / "selected_rmi_bench.csv"
+        for meta in run_metadata:
+            if not str(meta.get("branch_factor", "")).isdigit():
+                continue
+            fixed_cache = meta.get("fixed_cache_bytes", "")
+            cache_bytes = int(fixed_cache) if fixed_cache != "" else None
+            run_rmi_bench(
+                rmi_bin=rmi_bin,
+                data_path=data_path,
+                query_path=query_path,
+                rmi_data_dir=rmi_data_dir,
+                keys=keys,
+                memory_mib=args.M,
+                branch_factors=[int(meta["branch_factor"])],
+                policies_csv=policies_csv,
+                strategies_csv=strategies_csv,
+                header_mode=args.header,
+                query_limit=args.query_limit,
+                output_csv=Path(str(meta["summary_path"])),
+                dry_run=args.dry_run,
+                cache_bytes=cache_bytes,
+            )
+        write_combined_actual_summary(
+            run_metadata=run_metadata,
+            output_csv=actual_csv,
+            dry_run=args.dry_run,
+        )
+        comparison_csv = output_dir / "comparison_summary.csv"
+        build_comparison_summary(
+            run_metadata=run_metadata,
+            output_csv=comparison_csv,
+            dry_run=args.dry_run,
+        )
+        print(f"[+] actual RMI bench: {actual_csv}")
+        print(f"[+] comparison summary: {comparison_csv}")
+
+    print(f"[+] CDFShop candidates: {output_dir / 'cdfshop_candidate_configs.csv'}")
+    print(f"[+] optimalBF candidates: {candidate_costs_csv}")
+    print(f"[+] tuning time summary: {timing_path}")
+    print(f"[+] experiment plan: {plan_path}")
+
+
+if __name__ == "__main__":
+    main()

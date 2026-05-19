@@ -1,7 +1,7 @@
 import numpy as np
 import random
 import math
-DATASETS_DIRECTORY = "/mnt/backup_disk/Dataset/public/SOSD/"
+DATASETS_DIRECTORY = "/mnt/data/Dataset/public/SOSD/"
 
 def generate_realistic_queries_from_data(keys, num_queries=100000, seed=42):
     np.random.seed(seed)
@@ -84,7 +84,7 @@ def generate_range_queries(num_queries, key_space_size,
 def generate_range_queries_from_data(keys, num_queries,
                                      start_dist='uniform',
                                      length_dist='exponential',
-                                     max_length_keys=100000,  # 以“key 个数”为单位
+                                     max_length_keys=100000,
                                      exp_scale=100,
                                      seed=42):
     np.random.seed(seed)
@@ -219,6 +219,23 @@ def sample_unique_mixture(
 
     return chosen
 
+def _compute_page_intervals(keys, queries, epsilon, ipp):
+    idx = np.searchsorted(keys, queries, side="left")
+    idx = np.clip(idx, 0, len(keys) - 1).astype(np.int64)
+    l_page = (np.maximum(0, idx - epsilon) // ipp).astype(np.int64)
+    r_page = (np.minimum(len(keys) - 1, idx + epsilon) // ipp).astype(np.int64)
+    return l_page, r_page
+
+
+def _save_partitions(lengths, bitmap, lengths_file, bitmap_file):
+    if lengths_file:
+        np.array(lengths, dtype=np.int64).tofile(lengths_file)
+    if bitmap_file:
+        np.array(bitmap, dtype=np.int8).tofile(bitmap_file)
+    if lengths_file or bitmap_file:
+        print("[+] save partitions to", lengths_file, bitmap_file)
+
+
 def join_partition(
     keys: np.ndarray,
     queries: np.ndarray,
@@ -227,6 +244,7 @@ def join_partition(
     eta: float,
     lambda_point: float,
     lambda_range: float = None,
+    delta: float = 0.0,
     page_size: int = 4096,
     key_size: int = 8,
     epsilon: int = 16,
@@ -257,20 +275,10 @@ def join_partition(
 
     Q = len(queries)
     if Q == 0:
-        if lengths_file:
-            np.array([], dtype=np.int64).tofile(lengths_file)
-        if bitmap_file:
-            np.array([], dtype=np.int8).tofile(bitmap_file)
+        _save_partitions([], [], lengths_file, bitmap_file)
         return [], []
 
-    # rank proxy (you can swap to model-predicted pos if available)
-    idx = np.searchsorted(keys, queries, side="left")
-    idx = np.clip(idx, 0, len(keys) - 1).astype(np.int64)
-
-    lo = np.maximum(0, idx - int(epsilon))
-    hi = np.minimum(len(keys) - 1, idx + int(epsilon))
-    l_page = (lo // ipp).astype(np.int64)
-    r_page = (hi // ipp).astype(np.int64)
+    l_page, r_page = _compute_page_intervals(keys, queries, epsilon, ipp)
 
     lengths, bitmap = [], []
 
@@ -321,7 +329,7 @@ def join_partition(
                 break
 
             if eligible:
-                cost_point = alpha * N + lambda_point * union_len
+                cost_point = delta + alpha * N + lambda_point * union_len
                 cost_range = beta * K + eta + lambda_range * K
                 gain = cost_point - cost_range
 
@@ -344,7 +352,7 @@ def join_partition(
         # For correctness, re-evaluate with final K and union_len.
         # (K depends on pmin/pmax which are final values in loop.)
         K_final = pmax - pmin + 1
-        cost_point_final = alpha * part_len + lambda_point * union_len
+        cost_point_final = delta + alpha * part_len + lambda_point * union_len
         cost_range_final = beta * K_final + eta + lambda_range * K_final
         gain_final = cost_point_final - cost_range_final
 
@@ -361,30 +369,131 @@ def join_partition(
 
         i = j + 1
 
-    if lengths_file:
-        np.array(lengths, dtype=np.int64).tofile(lengths_file)
-    if bitmap_file:
-        np.array(bitmap, dtype=np.int8).tofile(bitmap_file)
-    print("[+] save partitions to", lengths_file, bitmap_file)
+    _save_partitions(lengths, bitmap, lengths_file, bitmap_file)
     return lengths, bitmap
+
+# def join_partition_fixed_window(
+#     keys: np.ndarray,
+#     queries: np.ndarray,
+#     window_size: int,
+#     alpha: float,
+#     beta: float,
+#     eta: float,
+#     lambda_point: float,
+#     lambda_range: float = None,
+#     delta: float = 0.0,
+#     page_size: int = 4096,
+#     key_size: int = 8,
+#     epsilon: int = 16,
+#     gamma: float = 0.0,
+#     phi: float = 0.0,
+#     lengths_file: str = "",
+#     bitmap_file: str = "",
+# ):
+#     """
+#     Partition sorted queries into fixed-size windows, then choose point or range
+#     per window using the same cost model as join_partition.
+
+#     For each window of window_size queries:
+#         N = number of queries in window
+#         K = page span [pmin, pmax]
+#         d = distinct pages touched by point probes (union of per-key page intervals)
+
+#         cost_point = delta + alpha * N + lambda_point * d
+#         cost_range = beta * K + eta + lambda_range * K
+
+#     Chooses range if range is cheaper by margin (gain > phi and
+#     cost_range <= (1-gamma)*cost_point).
+
+#     bitmap: 0=point, 1=range
+#     lengths: #queries per window (always window_size except possibly last)
+#     """
+#     if lambda_range is None:
+#         lambda_range = lambda_point
+
+#     ipp = page_size // key_size
+#     assert ipp > 0
+
+#     if np.any(queries[1:] < queries[:-1]):
+#         queries = np.sort(queries)
+
+#     Q = len(queries)
+#     if Q == 0:
+#         _save_partitions([], [], lengths_file, bitmap_file)
+#         return [], []
+
+#     if window_size <= 0:
+#         raise ValueError(f"window_size must be > 0, got {window_size}")
+
+#     l_page, r_page = _compute_page_intervals(keys, queries, epsilon, ipp)
+
+#     lengths, bitmap = [], []
+
+#     i = 0
+#     while i < Q:
+#         end = min(i + window_size, Q)
+#         N = end - i
+
+#         pmin = int(l_page[i])
+#         pmax = int(r_page[i])
+
+#         curL = int(l_page[i])
+#         curR = int(r_page[i])
+#         union_len = curR - curL + 1
+
+#         for k in range(i + 1, end):
+#             lk = int(l_page[k])
+#             rk = int(r_page[k])
+
+#             if lk < pmin:
+#                 pmin = lk
+#             if rk > pmax:
+#                 pmax = rk
+
+#             if lk > curR:
+#                 union_len += (rk - lk + 1)
+#                 curL, curR = lk, rk
+#             elif rk > curR:
+#                 union_len += (rk - curR)
+#                 curR = rk
+
+#         K = pmax - pmin + 1
+
+#         cost_point = delta + alpha * N + lambda_point * union_len
+#         cost_range = eta + (beta + lambda_range) * K
+#         gain = cost_point - cost_range
+
+#         use_range = (
+#             (gain > phi)
+#             and (cost_range <= (1.0 - gamma) * cost_point)
+#         )
+
+#         bitmap.append(1 if use_range else 0)
+#         lengths.append(N)
+
+#         i = end
+
+#     _save_partitions(lengths, bitmap, lengths_file, bitmap_file)
+#     return lengths, bitmap
+
 
 def main():
     
     # sizeList = [1e7,2e7,3e7,5e7,7e7,9e7,1e8,2e8]
     # datasets = ["fb","books","osm_cellids","wiki_ts"]
-    sizeList = [1e7]
-    datasets = ["books"]
-    """ point """
-    num_queries = 8000000       #1000000
-    for dataset in datasets:
-        for size in sizeList:
-            print(f"[*] Generate queries for {dataset}_{int(size/1e6)}M_uint64_unique")
-            raw = np.fromfile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique", dtype=np.uint64)
-            keys = raw
-            print(f"[*] Loaded {len(keys)} keys.")
-            queries = generate_realistic_queries_from_data(keys,num_queries)
-            queries.tofile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.8Mquery.bin")
-            print(f"[+] save queries to {DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.8Mquery.bin successfully!")
+    # sizeList = [1e7]
+    # datasets = ["books"]
+    # """ point """
+    # num_queries = 8000000       #1000000
+    # for dataset in datasets:
+    #     for size in sizeList:
+    #         print(f"[*] Generate queries for {dataset}_{int(size/1e6)}M_uint64_unique")
+    #         raw = np.fromfile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique", dtype=np.uint64)
+    #         keys = raw
+    #         print(f"[*] Loaded {len(keys)} keys.")
+    #         queries = generate_realistic_queries_from_data(keys,num_queries)
+    #         queries.tofile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.8Mquery.bin")
+    #         print(f"[+] save queries to {DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.8Mquery.bin successfully!")
     
     """ range """
     # num_queries = 4000000
@@ -450,18 +559,24 @@ def main():
 
     
     """ partition join"""
-    # page_size = 4096
-    # epsilon = 16
-    # queryfile = "books_200M_uint64_unique.1Mtable5.bin"
-    # dataset = "books_200M_uint64_unique"
-    # raw = np.fromfile(f"{DATASETS_DIRECTORY}{dataset}", dtype=np.uint64)
-    # keys = raw
-    # queries = np.fromfile(f"{DATASETS_DIRECTORY}{queryfile}", dtype=np.uint64)
-    # lengths_file=f"{DATASETS_DIRECTORY}{queryfile}.par".replace(".bin","")
-    # bitmap_file=f"{DATASETS_DIRECTORY}{queryfile}.bitmap".replace(".bin","")
-    # join_partition(keys,queries,alpha=1.168e-06,beta=5.831e-06,eta=0.121,lambda_point=2.763e-05,lambda_range=4.714e-06,
-    #                page_size=page_size,key_size=8,epsilon=epsilon,N_min=1000,K_max=8192
-    #                ,lengths_file=lengths_file,bitmap_file=bitmap_file)
+    alpha = 1.637e-06
+    beta = 1.719e-06
+    lambda_point = 1.195e-06
+    lambda_range = 4.669e-07
+    delta = 0.005
+    eta = 4.421e-06
+    page_size = 4096
+    epsilon = 16
+    queryfile = "books_200M_uint64_unique.1Mtable2.bin"
+    dataset = "books_200M_uint64_unique"
+    raw = np.fromfile(f"{DATASETS_DIRECTORY}{dataset}", dtype=np.uint64)
+    keys = raw
+    queries = np.fromfile(f"{DATASETS_DIRECTORY}{queryfile}", dtype=np.uint64)
+    lengths_file=f"{DATASETS_DIRECTORY}{queryfile}.par".replace(".bin","")
+    bitmap_file=f"{DATASETS_DIRECTORY}{queryfile}.bitmap".replace(".bin","")
+    join_partition(keys,queries,alpha=alpha,beta=beta,eta=eta,lambda_point=lambda_point,lambda_range=lambda_range,delta=delta,
+                   page_size=page_size,key_size=8,epsilon=epsilon,N_min=4096,K_max=8192
+                   ,lengths_file=lengths_file,bitmap_file=bitmap_file)
             
 if __name__ == '__main__':
     main()

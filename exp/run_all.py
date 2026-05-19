@@ -7,11 +7,11 @@ import sys
 from pathlib import Path
 
 DATASET = "/mnt/home/zwshi/learned-index/CAM/src/rmi/dataset/books_10M_uint64_unique_fixed"
-QUERY = "/mnt/backup_disk/Dataset/public/SOSD/books_10M_uint64_unique.query.bin"
+QUERY = "/mnt/data/Dataset/public/SOSD/books_10M_uint64_unique.query.bin"
 N = 10_000_000
 IPP = 512
 STRATEGY = "all_in_once"
-MEMORY_MIBS = [16, 32, 64]
+MEMORY_MIBS = [8, 16, 32, 64]
 DATASET_TAG = "books_10M"
 RMI_REPO = "src/rmi"
 WORKDIR = Path("src/rmi/rmi_eval")

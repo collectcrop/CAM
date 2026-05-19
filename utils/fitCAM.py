@@ -52,6 +52,7 @@ def fit_residual_model_global_eps_reciprocal_M(
     max_eps: int = 64,
     eps0: float = 1.0,
     ridge_lambda: float = 0.0,
+    cold_start_correction: bool = False,
     # align measurement scale
     real_is_total: bool = False,
     num_queries: int = 0,
@@ -82,6 +83,7 @@ def fit_residual_model_global_eps_reciprocal_M(
             query_file=query_file,
             fetch_strategy=fetch_strategy,
             mode=mode,
+            cold_start_correction=cold_start_correction,
         )
 
         r = y_real - y_hat
@@ -200,6 +202,7 @@ def evaluate_holdout_memory_budget_eps_reciprocal_M(
     mode: str = "point",
     max_eps: int = 64,
     eps0: float = 1.0,
+    cold_start_correction: bool = False,
     real_is_total: bool = False,
     num_queries: int = 0,
 ):
@@ -216,6 +219,7 @@ def evaluate_holdout_memory_budget_eps_reciprocal_M(
         query_file=query_file,
         fetch_strategy=fetch_strategy,
         mode=mode,
+        cold_start_correction=cold_start_correction,
     )
 
     M_vec = np.full_like(eps, float(M_holdout_mib), dtype=np.float64)

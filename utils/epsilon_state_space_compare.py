@@ -8,7 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 
-DEFAULT_DATASETS_DIRECTORY = "/mnt/backup_disk/Dataset/public/SOSD/"
+DEFAULT_DATASETS_DIRECTORY = "/mnt/data/Dataset/public/SOSD/"
 
 
 def parse_policy_list(raw: str) -> list[str]:
@@ -39,11 +39,8 @@ def parse_epsilons(
     if not out:
         raise ValueError("epsilon set is empty")
     for eps in out:
-        if eps < 2 or eps > 128 or eps % 2 != 0:
-            raise ValueError(
-                f"epsilon={eps} is unsupported by pgm_cam_covariance after this patch; "
-                "only even epsilons in [2,128] are allowed"
-            )
+        if eps <= 0:
+            raise ValueError(f"epsilon={eps} is invalid; epsilon must be positive")
     return out
 
 
@@ -80,8 +77,13 @@ def run_estimator(
     ipp: int,
     page_size: int,
     strategy: str,
+    budget_mode: str,
+    index_size_bin: Path,
+    index_size_csv: Path,
+    cold_start_correction: bool,
 ) -> list[dict[str, float | int | str]]:
     try:
+        import optimalEpsilon
         from optimalEpsilon import cost_function
     except ModuleNotFoundError as exc:
         raise RuntimeError(
@@ -92,10 +94,28 @@ def run_estimator(
 
     rows: list[dict[str, float | int | str]] = []
     m_bytes = m_mib << 20
+    measured_index_sizes: dict[int, int] = {}
+    if budget_mode == "measured":
+        measured_index_sizes = run_index_size_tool(
+            index_size_bin=index_size_bin,
+            data_path=data_path,
+            n_keys=n_keys,
+            epsilons=epsilons,
+            output_csv=index_size_csv,
+        )
+
+    original_budget_mode = optimalEpsilon.BUDGET_MODE
+    optimalEpsilon.BUDGET_MODE = "MEASURED" if budget_mode == "measured" else "ESTIMATED"
     for policy in policies:
         for eps in epsilons:
+            measured_index_bytes = measured_index_sizes.get(eps, 0)
+            if budget_mode == "measured":
+                estimator_memory = max(0, m_bytes - measured_index_bytes)
+            else:
+                estimator_memory = m_bytes
+
             t0 = time.perf_counter()
-            est_avg_io, est_hit_ratio = cost_function(
+            est_avg_io, est_hit_ratio, detail = cost_function(
                 epsilon=eps,
                 n=n_keys,
                 seg_size=seg_size,
@@ -106,6 +126,9 @@ def run_estimator(
                 data_file=data_path,
                 s=strategy,
                 cache_policy=policy,
+                measured_index_bytes=measured_index_bytes if budget_mode == "measured" else None,
+                cold_start_correction=cold_start_correction,
+                return_detail=True,
             )
             dt = time.perf_counter() - t0
             rows.append(
@@ -115,9 +138,51 @@ def run_estimator(
                     "estimated_avg_logical_ios": float(est_avg_io),
                     "estimated_hit_ratio": float(est_hit_ratio),
                     "estimate_time_sec": float(dt),
+                    "estimated_budget_mode": budget_mode,
+                    "measured_index_bytes": measured_index_bytes,
+                    "estimated_cache_bytes": estimator_memory
+                    if budget_mode == "measured"
+                    else max(0, m_bytes - int(n_keys * seg_size / (2 * eps))),
+                    "cold_start_correction": int(cold_start_correction),
+                    "steady_hit_ratio": float(detail.get("steady_hit_ratio", est_hit_ratio)),
+                    "cold_miss_ratio": float(detail.get("cold_miss_ratio", 0.0)),
+                    "expected_distinct_pages": float(detail.get("expected_distinct_pages", 0.0)),
                 }
             )
+    optimalEpsilon.BUDGET_MODE = original_budget_mode
     return rows
+
+
+def run_index_size_tool(
+    index_size_bin: Path,
+    data_path: str,
+    n_keys: int,
+    epsilons: list[int],
+    output_csv: Path,
+) -> dict[int, int]:
+    ensure_parent(output_csv)
+    cmd = [
+        str(index_size_bin),
+        "--data",
+        data_path,
+        "--keys",
+        str(n_keys),
+        "--epsilons",
+        ",".join(str(eps) for eps in epsilons),
+        "--output",
+        str(output_csv),
+    ]
+    subprocess.run(cmd, check=True)
+
+    out: dict[int, int] = {}
+    with output_csv.open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        required = {"epsilon", "measured_index_bytes"}
+        if reader.fieldnames is None or not required.issubset(set(reader.fieldnames)):
+            raise ValueError(f"unexpected index-size CSV header in {output_csv}")
+        for row in reader:
+            out[int(row["epsilon"])] = int(row["measured_index_bytes"])
+    return out
 
 
 def run_simulator(
@@ -216,6 +281,13 @@ def merge_rows(
         est_avg_io = float(row["estimated_avg_logical_ios"])
         est_hit_ratio = float(row["estimated_hit_ratio"])
         est_time = float(row["estimate_time_sec"])
+        estimated_budget_mode = str(row.get("estimated_budget_mode", "estimated"))
+        measured_index_bytes = int(row.get("measured_index_bytes", 0))
+        estimated_cache_bytes = int(row.get("estimated_cache_bytes", 0))
+        cold_start_correction = int(row.get("cold_start_correction", 0))
+        steady_hit_ratio = float(row.get("steady_hit_ratio", est_hit_ratio))
+        cold_miss_ratio = float(row.get("cold_miss_ratio", 0.0))
+        expected_distinct_pages = float(row.get("expected_distinct_pages", 0.0))
 
         act_avg_io = float(actual["actual_avg_logical_ios"])
         act_hit_ratio = float(actual["actual_hit_ratio"])
@@ -234,6 +306,13 @@ def merge_rows(
                 "estimated_avg_logical_ios": est_avg_io,
                 "estimated_hit_ratio": est_hit_ratio,
                 "estimate_time_sec": est_time,
+                "estimated_budget_mode": estimated_budget_mode,
+                "measured_index_bytes": measured_index_bytes,
+                "estimated_cache_bytes": estimated_cache_bytes,
+                "cold_start_correction": cold_start_correction,
+                "steady_hit_ratio": steady_hit_ratio,
+                "cold_miss_ratio": cold_miss_ratio,
+                "expected_distinct_pages": expected_distinct_pages,
                 "actual_queries": int(actual["queries"]),
                 "actual_avg_logical_ios": act_avg_io,
                 "actual_hit_ratio": act_hit_ratio,
@@ -269,6 +348,13 @@ def write_csv(rows: list[dict[str, float | int | str]], output_path: Path) -> No
         "estimated_avg_logical_ios",
         "estimated_hit_ratio",
         "estimate_time_sec",
+        "estimated_budget_mode",
+        "measured_index_bytes",
+        "estimated_cache_bytes",
+        "cold_start_correction",
+        "steady_hit_ratio",
+        "cold_miss_ratio",
+        "expected_distinct_pages",
         "actual_queries",
         "actual_avg_logical_ios",
         "actual_hit_ratio",
@@ -330,6 +416,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to pgm_cam_covariance binary",
     )
     parser.add_argument(
+        "--index-size-bin",
+        type=Path,
+        default=Path("build/pgm_index_sizes"),
+        help="path to pgm_index_sizes binary used by measured CAM estimates",
+    )
+    parser.add_argument(
         "--budget-mode",
         default="estimated",
         choices=["estimated", "measured"],
@@ -348,6 +440,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="output CSV path from pgm_cam_covariance",
     )
     parser.add_argument(
+        "--index-size-out",
+        type=Path,
+        default=None,
+        help="output CSV path for measured PGM index sizes",
+    )
+    parser.add_argument(
         "--merged-out",
         type=Path,
         default=None,
@@ -357,6 +455,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--reuse-sim-summary",
         action="store_true",
         help="skip running simulator and reuse --sim-summary-out",
+    )
+    parser.add_argument(
+        "--cold-start-correction",
+        action="store_true",
+        help="Enable cold-start compulsory-miss correction in point-query CAM estimates.",
     )
     return parser
 
@@ -381,6 +484,11 @@ def main() -> None:
         if args.sim_summary_out is not None
         else Path(f"build/log/{dataset_key}_M{args.M}_statespace_summary.csv")
     )
+    index_size_out = (
+        args.index_size_out
+        if args.index_size_out is not None
+        else Path(f"build/log/{dataset_key}_M{args.M}_statespace_index_sizes.csv")
+    )
     merged_out = (
         args.merged_out
         if args.merged_out is not None
@@ -401,6 +509,10 @@ def main() -> None:
         ipp=args.ipp,
         page_size=args.page_size,
         strategy=args.strategy,
+        budget_mode=args.budget_mode,
+        index_size_bin=args.index_size_bin,
+        index_size_csv=index_size_out,
+        cold_start_correction=args.cold_start_correction,
     )
 
     if not args.reuse_sim_summary:

@@ -39,7 +39,7 @@ uint64_t lookup_with_leaf(uint64_t key, size_t* err, size_t* leaf) {
   *err = *((uint64_t*) (L1_PARAMETERS + (modelIndex * 24) + 16));
 
   if (leaf) *leaf = modelIndex;
-  return FCLAMP(fpred, 10000000.0 - 1.0);
+  return FCLAMP(fpred, 200000000.0 - 1.0);
 }
 uint64_t lookup(uint64_t key, size_t* err) {
   return lookup_with_leaf(key, err, nullptr);

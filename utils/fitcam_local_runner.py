@@ -34,6 +34,7 @@ def compatible_compute_model_costs_per_query(
     query_file: str,
     fetch_strategy: str = "all_in_once",
     mode: str = "point",
+    cold_start_correction: bool = False,
 ) -> np.ndarray:
     M_bytes = float(M_mib) * 1024.0 * 1024.0
     data_path = f"{fitCAM.base.DATASETS_DIRECTORY}{data_file}"
@@ -55,6 +56,7 @@ def compatible_compute_model_costs_per_query(
                 data_file=data_path,
                 s=fetch_strategy,
                 cache_policy=FIT_POLICY,
+                cold_start_correction=cold_start_correction,
             )
         elif mode == "range":
             cost_value, _ = fitCAM.base.range_cost_function(
@@ -67,6 +69,7 @@ def compatible_compute_model_costs_per_query(
                 query_file=query_path,
                 data_file=data_path,
                 policy=FIT_POLICY,
+                cold_start_correction=cold_start_correction,
             )
         else:
             raise ValueError(f"Unknown mode: {mode}")
@@ -117,6 +120,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-eps", type=int, default=64)
     parser.add_argument("--eps0", type=float, default=0.0)
     parser.add_argument("--ridge-lambda", type=float, default=1e-6)
+    parser.add_argument(
+        "--cold-start-correction",
+        action="store_true",
+        help="Enable cold-start compulsory-miss correction in point-query CAM estimates.",
+    )
     parser.add_argument(
         "--comparison-csv-name",
         default="fitcam_corrected_vs_real.csv",
@@ -276,6 +284,7 @@ def main() -> None:
         max_eps=args.max_eps,
         eps0=args.eps0,
         ridge_lambda=args.ridge_lambda,
+        cold_start_correction=args.cold_start_correction,
         real_is_total=False,
         num_queries=0,
     )
@@ -318,6 +327,7 @@ def main() -> None:
             mode=args.mode,
             max_eps=args.max_eps,
             eps0=args.eps0,
+            cold_start_correction=args.cold_start_correction,
             real_is_total=False,
             num_queries=0,
         )

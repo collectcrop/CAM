@@ -5,7 +5,7 @@ PYTHON_BIN="${PYTHON_BIN:-$HOME/miniconda3/bin/python}"
 RMI_BIN="${RMI_BIN:-./build/rmi_bench}"
 
 DATA_PATH="${DATA_PATH:-src/rmi/dataset/books_10M_uint64_unique_fixed}"
-QUERY_PATH="${QUERY_PATH:-/mnt/backup_disk/Dataset/public/SOSD/books_10M_uint64_unique.query.bin}"
+QUERY_PATH="${QUERY_PATH:-/mnt/data/Dataset/public/SOSD/books_10M_uint64_unique.query.bin}"
 RMI_DATA_DIR="${RMI_DATA_DIR:-src/rmi/rmi_data}"
 RMI_RESULTS_DIR="${RMI_RESULTS_DIR:-src/rmi/rmi_eval/results}"
 

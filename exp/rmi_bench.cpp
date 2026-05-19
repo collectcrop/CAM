@@ -76,6 +76,8 @@ struct Config {
     std::string rmi_data_dir = "src/rmi/rmi_data";
     size_t total_keys = 0;
     size_t total_budget_bytes = 64ULL << 20;
+    bool has_fixed_cache_bytes = false;
+    size_t fixed_cache_bytes = 0;
     cam::storage::HeaderMode header_mode = cam::storage::HeaderMode::AUTO;
     std::vector<SearchStrategy> strategies = {ALL_IN_ONCE};
     std::vector<CachePolicy> policies = {CachePolicy::FIFO, CachePolicy::LRU, CachePolicy::LFU};
@@ -133,8 +135,8 @@ std::string supported_rmi_list() {
     throw std::invalid_argument(
         msg +
         "\nUsage: ./rmi_bench --data <file> --queries <file> [--rmi-data-dir <dir>]"
-        " [--keys <n>] [--M <MiB>] [--header <auto|yes|no>]"
-        " [--strategies <all_in_once,one_by_one|all>]"
+        " [--keys <n>] [--M <MiB>] [--cache-bytes <bytes>]"
+        " [--header <auto|yes|no>] [--strategies <all_in_once,one_by_one|all>]"
         " [--policies <fifo,lru,lfu,none|all>]"
         " [--branch-factors <all|" + supported_rmi_list() + ">]"
         " [--query-limit <n>]");
@@ -225,6 +227,9 @@ Config parse_args(int argc, char** argv) {
             cfg.total_keys = std::stoull(require_value("--keys"));
         } else if (arg == "--M") {
             cfg.total_budget_bytes = std::stoull(require_value("--M")) << 20;
+        } else if (arg == "--cache-bytes") {
+            cfg.fixed_cache_bytes = std::stoull(require_value("--cache-bytes"));
+            cfg.has_fixed_cache_bytes = true;
         } else if (arg == "--header") {
             cfg.header_mode = cam::storage::parse_header_mode(require_value("--header"));
         } else if (arg == "--strategies") {
@@ -312,7 +317,9 @@ RunResult run_one_policy(
     SearchStrategy strategy,
     const cam::storage::KeyFileLayout& data_layout,
     const std::vector<KeyType>& queries,
-    size_t total_budget_bytes)
+    size_t total_budget_bytes,
+    bool has_fixed_cache_bytes,
+    size_t fixed_cache_bytes)
 {
     RunResult st;
     st.model = &model;
@@ -321,9 +328,21 @@ RunResult run_one_policy(
     st.queries = queries.size();
     st.total_budget_bytes = total_budget_bytes;
     st.index_bytes = model.index_bytes;
-    st.cache_bytes = total_budget_bytes > model.index_bytes
-        ? total_budget_bytes - model.index_bytes
-        : 0;
+    if (has_fixed_cache_bytes) {
+        st.cache_bytes = fixed_cache_bytes;
+        if (st.cache_bytes > total_budget_bytes || st.index_bytes > total_budget_bytes - st.cache_bytes) {
+            std::ostringstream oss;
+            oss << "fixed cache bytes plus index bytes exceeds total budget for "
+                << model.name << ": cache_bytes=" << st.cache_bytes
+                << " index_bytes=" << st.index_bytes
+                << " total_budget_bytes=" << total_budget_bytes;
+            throw std::runtime_error(oss.str());
+        }
+    } else {
+        st.cache_bytes = total_budget_bytes > model.index_bytes
+            ? total_budget_bytes - model.index_bytes
+            : 0;
+    }
 
     RMIIndexAdapter index(model, data_layout.total_keys, data_layout.logical_pages);
     cam::storage::DiskManager disk(
@@ -405,7 +424,8 @@ void run_model(
     for (SearchStrategy strategy : cfg.strategies) {
         for (CachePolicy policy : cfg.policies) {
             const auto st = run_one_policy(
-                model, policy, strategy, data_layout, queries, cfg.total_budget_bytes);
+                model, policy, strategy, data_layout, queries,
+                cfg.total_budget_bytes, cfg.has_fixed_cache_bytes, cfg.fixed_cache_bytes);
             print_row(st);
         }
     }

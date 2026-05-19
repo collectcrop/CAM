@@ -4,7 +4,7 @@ set -eu
 PYTHON_BIN="${PYTHON_BIN:-$HOME/miniconda3/bin/python}"
 CAM_BIN="${CAM_BIN:-./build/pgm_range_bench}"
 
-DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-/mnt/backup_disk/Dataset/public/SOSD}"
+DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}"
 DATA_FILE="${DATA_FILE:-fb_10M_uint64_unique}"
 QUERY_FILE="${QUERY_FILE:-fb_10M_uint64_unique.range.bin}"
 DATA_PATH="${DATA_PATH:-$DATASETS_DIRECTORY/$DATA_FILE}"
@@ -27,6 +27,12 @@ REAL_DIR="$ROOT_DIR/real_summary"
 EST_DIR="$ROOT_DIR/estimate"
 FIT_DIR="$ROOT_DIR/fit_output"
 QUERY_PREFIX_DIR="$ROOT_DIR/query_prefix"
+COLD_START_CORRECTION="${COLD_START_CORRECTION:-1}"
+
+FITCAM_COLD_FLAG=""
+if [ "$COLD_START_CORRECTION" = "1" ]; then
+  FITCAM_COLD_FLAG="--cold-start-correction"
+fi
 
 mkdir -p "$REAL_DIR" "$EST_DIR" "$FIT_DIR" "$QUERY_PREFIX_DIR"
 
@@ -51,6 +57,7 @@ echo "[q30] TOTAL_QUERIES=$TOTAL_QUERIES"
 echo "[q30] QUERY_LIMIT=$QUERY_LIMIT"
 echo "[q30] ROOT_DIR=$ROOT_DIR"
 echo "[q30] POLICIES=$POLICIES"
+echo "[q30] COLD_START_CORRECTION=$COLD_START_CORRECTION"
 
 # for M in $TRAIN_M_LIST; do
 #   OUT_CSV="$REAL_DIR/${DATASET_TAG}_M${M}_q30_summary.csv"
@@ -142,6 +149,7 @@ echo "[fitCAM][$POLICY] -> $POLICY_FIT_DIR"
   --type sample \
   --mode range \
   --fetch-strategy all_in_once \
+  $FITCAM_COLD_FLAG \
   --max-eps 64 \
   --eps0 0.0 \
   --ridge-lambda 1e-6 \

@@ -5,10 +5,12 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <unordered_set>
 #include <vector>
 
 #include "../src/cache/CacheInterface.hpp"
@@ -45,6 +47,8 @@ struct Config {
     size_t query_limit = 0;
     size_t M = 64ULL << 20;
     BudgetMode budget_mode = BudgetMode::RAW;
+    size_t warmup_pages = 0;
+    uint64_t warmup_seed = 42;
 
     size_t epsilon_start = 2;
     size_t epsilon_end = 128;
@@ -63,6 +67,9 @@ struct SummaryRow {
     size_t estimated_index_bytes = 0;
     size_t measured_index_bytes = 0;
     size_t reserved_index_bytes = 0;
+    size_t warmup_pages_requested = 0;
+    size_t warmup_pages_loaded = 0;
+    uint64_t warmup_seed = 0;
 
     size_t queries = 0;
     uint64_t total_dac = 0;
@@ -110,6 +117,7 @@ struct SummaryRow {
         " [--epsilons <e1,e2,...> | --epsilon-start <s> --epsilon-end <e> --epsilon-step <d>]"
         " [--policies <fifo,lru,lfu,none|all>] [--strategies <all_in_once,one_by_one|all>]"
         " [--budget-mode <estimated|measured>] [--summary-out <csv>] [--query-limit <n>]"
+        " [--warmup-pages <n>] [--warmup-seed <seed>]"
     );
 }
 
@@ -227,6 +235,10 @@ Config parse_args(int argc, char** argv) {
             cfg.summary_out = require_value("--summary-out");
         } else if (arg == "--query-limit") {
             cfg.query_limit = std::stoull(require_value("--query-limit"));
+        } else if (arg == "--warmup-pages") {
+            cfg.warmup_pages = std::stoull(require_value("--warmup-pages"));
+        } else if (arg == "--warmup-seed") {
+            cfg.warmup_seed = std::stoull(require_value("--warmup-seed"));
         } else if (arg == "-h" || arg == "--help") {
             usage_error("help requested");
         } else {
@@ -261,6 +273,7 @@ void write_summary_header(std::ostream& out) {
     out
         << "epsilon,policy,strategy,budget_mode,memory_budget_bytes,cache_bytes,cache_pages,"
         << "estimated_index_bytes,measured_index_bytes,reserved_index_bytes,"
+        << "warmup_pages_requested,warmup_pages_loaded,warmup_seed,"
         << "queries,total_dac,total_cache_hits,total_cache_misses,"
         << "global_hit_ratio,avg_dac,avg_cam_io,index_build_ns,simulate_wall_ns,"
         << "throughput_qps,query_checksum\n";
@@ -278,6 +291,9 @@ void write_summary_row(std::ostream& out, const SummaryRow& row) {
         << row.estimated_index_bytes << ','
         << row.measured_index_bytes << ','
         << row.reserved_index_bytes << ','
+        << row.warmup_pages_requested << ','
+        << row.warmup_pages_loaded << ','
+        << row.warmup_seed << ','
         << row.queries << ','
         << row.total_dac << ','
         << row.total_cache_hits << ','
@@ -303,6 +319,36 @@ inline void touch_cache_page(ICache& cache, size_t page_idx, SummaryRow& row) {
     ++row.total_cache_misses;
     Page empty;
     cache.put(page_idx, std::move(empty));
+}
+
+void warmup_cache_random_pages(
+    ICache& cache,
+    size_t total_pages,
+    size_t requested_pages,
+    uint64_t seed,
+    SummaryRow& row)
+{
+    row.warmup_pages_requested = requested_pages;
+    row.warmup_seed = seed;
+    if (requested_pages == 0 || total_pages == 0 || cache.capacity_pages() == 0) {
+        return;
+    }
+
+    const size_t target = std::min({requested_pages, cache.capacity_pages(), total_pages});
+    std::mt19937_64 rng(seed);
+    std::uniform_int_distribution<size_t> dist(0, total_pages - 1);
+    std::unordered_set<size_t> seen;
+    seen.reserve(target * 2);
+
+    while (seen.size() < target) {
+        const size_t page_idx = dist(rng);
+        if (!seen.insert(page_idx).second) {
+            continue;
+        }
+        Page empty;
+        cache.put(page_idx, std::move(empty));
+    }
+    row.warmup_pages_loaded = seen.size();
 }
 
 template <typename IndexT>
@@ -378,8 +424,11 @@ SummaryRow run_one_policy(
     row.cache_pages = row.cache_bytes / PAGE_SIZE;
     row.index_build_ns = index_build_ns;
     row.queries = queries.size();
+    row.warmup_pages_requested = cfg.warmup_pages;
+    row.warmup_seed = cfg.warmup_seed;
 
     auto cache = MakeCache(policy, row.cache_bytes, PAGE_SIZE);
+    warmup_cache_random_pages(*cache, page_last_keys.size(), cfg.warmup_pages, cfg.warmup_seed, row);
 
     const auto t0 = Clock::now();
     for (KeyT q : queries) {

@@ -232,7 +232,7 @@ QueryStats run_query_workload(
 
     const auto t0 = Clock::now();
     for (KeyType key : queries) {
-        const auto result = cam::pgm_query::run_point_query(index, disk, key, ALL_IN_ONCE);
+        const auto result = cam::point_query::run_point_query(index, disk, key, ALL_IN_ONCE);
         if (result.found) {
             ++stats.found;
             stats.checksum += result.matched_key;

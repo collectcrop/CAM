@@ -1,6 +1,6 @@
 # ./build/pgm_bench \
-#   --data /mnt/backup_disk/Dataset/public/SOSD/books_10M_uint64_unique \
-#   --queries /mnt/backup_disk/Dataset/public/SOSD/books_10M_uint64_unique.query.bin \
+#   --data /mnt/data/Dataset/public/SOSD/books_10M_uint64_unique \
+#   --queries /mnt/data/Dataset/public/SOSD/books_10M_uint64_unique.query.bin \
 #   --keys 10000000 \
 #   --M 60 \
 
@@ -9,8 +9,8 @@
 # for M in 10 20 40 60; do
 #   echo "[pgm_range_bench] running M=${M} MiB" >&2
 #   ./build/pgm_range_bench \
-#     --data /mnt/backup_disk/Dataset/public/SOSD/fb_10M_uint64_unique \
-#     --queries /mnt/backup_disk/Dataset/public/SOSD/fb_10M_uint64_unique.range.bin \
+#     --data /mnt/data/Dataset/public/SOSD/fb_10M_uint64_unique \
+#     --queries /mnt/data/Dataset/public/SOSD/fb_10M_uint64_unique.range.bin \
 #     --keys 10000000 \
 #     --M "${M}" \
 #     --policies FIFO,LRU,LFU \
@@ -19,8 +19,8 @@
 
 
 # ./build/pgm_cam_covariance \
-#   --data /mnt/backup_disk/Dataset/public/SOSD/books_10M_uint64_unique \
-#   --queries /mnt/backup_disk/Dataset/public/SOSD/books_10M_uint64_unique.query.bin \
+#   --data /mnt/data/Dataset/public/SOSD/books_10M_uint64_unique \
+#   --queries /mnt/data/Dataset/public/SOSD/books_10M_uint64_unique.query.bin \
 #   --keys 10000000 \
 #   --M 10 \
 #   --epsilons 4,8,10,12,14,16,20,24,32,64,128 \
@@ -30,28 +30,43 @@
 #   # --detail-out build/log/books_10M_M60_cam_cov_detail.csv
 
 
-# python utils/plot_epsilon_benchmarks.py \
+# python visualize/plot_epsilon_benchmarks.py \
 #   --estimate-paths build/log/books_10M_uint64_unique_FIFO.log build/log/books_10M_uint64_unique_LFU.log build/log/books_10M_uint64_unique_LRU.log \
 #   --bench-paths build/log/books_10M_M10_bench.csv build/log/books_10M_M20_bench.csv build/log/books_10M_M40_bench.csv build/log/books_10M_M60_bench.csv \
 #   --fitcam-root build/log/fitcam_q30 \
 #   --output-dir data/outputs/figures/epsilon_analysis
 
-for M in 8; do
-  ./build/rmi_bench \
-    --data src/rmi/dataset/books_10M_uint64_unique_fixed \
-    --queries /mnt/backup_disk/Dataset/public/SOSD/books_10M_uint64_unique.query.bin \
-    --rmi-data-dir src/rmi/rmi_data \
-    --branch-factors all \
-    --header yes \
-    --M "$M" \
-    > "build/log/rmi/books_10M_M${M}_rmi_bench.csv"
-done
+# for M in 8; do
+#   ./build/rmi_bench \
+#     --data src/rmi/dataset/books_10M_uint64_unique_fixed \
+#     --queries /mnt/data/Dataset/public/SOSD/books_10M_uint64_unique.query.bin \
+#     --rmi-data-dir src/rmi/rmi_data \
+#     --branch-factors all \
+#     --header yes \
+#     --M "$M" \
+#     > "build/log/rmi/books_10M_M${M}_rmi_bench.csv"
+# done
 
 
 # python utils/plot_rmi_io_compare.py \
-#   --estimate-log build/log/rmi/books_10M_M32_rmi_optimalBF_summary.log \
-#   --bench-csv build/log/rmi/books_10M_M32_rmi_bench.csv \
-#   --output build/log/rmi/books_10M_M32_rmi_io_compare.pdf
+#   --estimate-log build/log/rmi/books_10M_M8_rmi_optimalBF_summary.log \
+#   --bench-csv build/log/rmi/books_10M_M8_rmi_bench.csv \
+#   --output build/log/rmi/books_10M_M8_rmi_io_compare.pdf
+
+# python utils/plot_rmi_io_compare.py \
+#   --estimate-log \
+#     build/log/rmi/books_10M_M8_rmi_optimalBF_summary.log \
+#     build/log/rmi/books_10M_M16_rmi_optimalBF_summary.log \
+#     build/log/rmi/books_10M_M32_rmi_optimalBF_summary.log \
+#     build/log/rmi/books_10M_M64_rmi_optimalBF_summary.log \
+#   --bench-csv \
+#     build/log/rmi/books_10M_M8_rmi_bench.csv \
+#     build/log/rmi/books_10M_M16_rmi_bench.csv \
+#     build/log/rmi/books_10M_M32_rmi_bench.csv \
+#     build/log/rmi/books_10M_M64_rmi_bench.csv \
+#   --m-values 8 16 32 64 \
+#   --output build/log/rmi/books_10M_rmi_io_compare.pdf
+
 
 # python utils/plot_rmi_fitrmi_compare.py \
   # --comparison-csv build/log/fitrmi_q30/books_10M/fit_output/LRU/books_10M_LRU_q30_fitrmi_corrected_vs_real.csv \
@@ -91,8 +106,8 @@ done
 
 
 # ./build/pgm_cache_simulate \
-#   --data /mnt/backup_disk/Dataset/public/SOSD/books_10M_uint64_unique \
-#   --queries /mnt/backup_disk/Dataset/public/SOSD/books_10M_uint64_unique.8Mquery.bin \
+#   --data /mnt/data/Dataset/public/SOSD/books_10M_uint64_unique \
+#   --queries /mnt/data/Dataset/public/SOSD/books_10M_uint64_unique.8Mquery.bin \
 #   --keys 10000000 \
 #   --M 10 \
 #   --policies FIFO,LRU,LFU \
@@ -102,8 +117,8 @@ done
 
 
 # ./build/sort_cache_tradeoff \
-#   --data /mnt/backup_disk/Dataset/public/SOSD/books_200M_uint64_unique \
-#   --queries /mnt/backup_disk/Dataset/public/SOSD/books_200M_uint64_unique.1Mtable1.bin \
+#   --data /mnt/data/Dataset/public/SOSD/books_200M_uint64_unique \
+#   --queries /mnt/data/Dataset/public/SOSD/books_200M_uint64_unique.1Mtable1.bin \
 #   --keys 200000000 \
 #   --M 64 \
 #   --sort-mibs 0,8,16,32 \
@@ -114,9 +129,36 @@ done
 
 # ./build/rmi_bench \
 #   --data src/rmi/dataset/books_10M_uint64_unique_fixed \
-#   --queries /mnt/backup_disk/Dataset/public/SOSD/books_10M_uint64_unique.query.bin \
+#   --queries /mnt/data/Dataset/public/SOSD/books_10M_uint64_unique.query.bin \
 #   --rmi-data-dir src/rmi/rmi_data \
 #   --branch-factors 64,128,256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144,524288,1048576,2097152 \
 #   --header yes \
 #   --M 16 \
 #   > build/log/rmi/books_10M_M16_rmi_bench.csv
+
+./exp/run_pgm_tuner_cache_compare.py \
+  --data books_200M_uint64_unique \
+  --queries books_200M_uint64_unique.query.bin \
+  --keys 200000000 \
+  --M 4 \
+  --candidate-eps 4-128 \
+  --cache-ratios 0.25,0.50,0.75 \
+  --tuner-bin ./build/tuner \
+  --cam-bin ./build/pgm_cam_covariance
+
+# python3 exp/run_rmi_tuner_cache_compare.py \
+#   --data books_200M_uint64_unique \
+#   --queries books_200M_uint64_unique.query.bin \
+#   --optimizer-data books_200M_uint64 \
+#   --keys 200000000 \
+#   --M 4 \
+#   --header no \
+#   --dataset-tag books_200M \
+#   --policies FIFO,LRU,LFU \
+#   --strategies all_in_once \
+#   --tuning-policy LRU \
+#   --optimizer-threads 8 \
+#   --output-dir build/log/rmi_tuner_cache_compare \
+#   --candidate-bfs 256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144,524288,1048576,2097152 \
+#   --force-optimizer
+

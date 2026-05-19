@@ -72,6 +72,22 @@ add_executable(rmi_bench
     src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2097152.cpp
 )
 
+add_executable(pgm_join_fit
+    exp/pgm_join_fit.cpp
+)
+
+add_executable(pgm_hybrid_join
+    exp/pgm_hybrid_join.cpp
+)
+
+add_executable(tuner
+    src/pgm/tuner/tuner.cpp
+)
+
+add_executable(pgm_index_sizes
+    exp/pgm_index_sizes.cpp
+)
+
 target_include_directories(pgm_bench
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -106,6 +122,27 @@ target_include_directories(rmi_bench
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/rmi/rmi_eval/generated
+)
+
+target_include_directories(pgm_join_fit
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_include_directories(pgm_hybrid_join
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_include_directories(tuner
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/pgm/tuner
+)
+
+target_include_directories(pgm_index_sizes
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 target_link_libraries(pgm_bench
@@ -143,6 +180,26 @@ target_link_libraries(rmi_bench
         cam_cache
 )
 
+target_link_libraries(pgm_join_fit
+    PRIVATE
+        cam_cache
+)
+
+target_link_libraries(pgm_hybrid_join
+    PRIVATE
+        cam_cache
+)
+
+target_link_libraries(tuner
+    PRIVATE
+        cam_cache
+)
+
+target_link_libraries(pgm_index_sizes
+    PRIVATE
+        cam_cache
+)
+
 if(CAM_ENABLE_WARNINGS)
     target_compile_options(pgm_bench PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
@@ -163,6 +220,18 @@ if(CAM_ENABLE_WARNINGS)
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
     )
     target_compile_options(rmi_bench PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(pgm_join_fit PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(pgm_hybrid_join PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(tuner PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(pgm_index_sizes PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
     )
 endif()

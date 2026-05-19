@@ -6,7 +6,7 @@ set -eu
 #   FIXED_EPSILON=32 M_LIST="10 20 40 60" DATASET_SIZE_MB=200 sh exp.sh
 #
 # Optional overrides:
-#   DATA_DIR=/mnt/backup_disk/Dataset/public/SOSD
+#   DATA_DIR=/mnt/data/Dataset/public/SOSD
 #   DATASET_SIZE_MB=10|100|200
 #   TOTAL_KEYS=<int>
 #   FIXED_EPSILON=<even number in [2,128]>
@@ -16,7 +16,7 @@ set -eu
 #   BUDGET_MODE=raw|estimated|measured
 #   OUT_DIR=build/log/cmp
 
-DATA_DIR="${DATA_DIR:-/mnt/backup_disk/Dataset/public/SOSD}"
+DATA_DIR="${DATA_DIR:-/mnt/data/Dataset/public/SOSD}"
 DATASET_SIZE_MB="${DATASET_SIZE_MB:-10}"
 FIXED_EPSILON="${FIXED_EPSILON:-32}"
 M_LIST="${M_LIST:-10 20 40 60}"

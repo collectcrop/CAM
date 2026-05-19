@@ -4,3 +4,7 @@ build
 .vscode
 data
 .codex
+visualize
+__pycache__/
+src/rmi/dataset/
+src/rmi/rmi_data/

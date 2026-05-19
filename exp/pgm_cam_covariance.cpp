@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -38,7 +39,8 @@ const std::vector<CachePolicy> kDefaultPolicies = {
 enum class BudgetMode {
     RAW,
     ESTIMATED,
-    MEASURED
+    MEASURED,
+    FIXED_CACHE
 };
 
 struct Config {
@@ -52,6 +54,7 @@ struct Config {
     size_t total_keys = 0;
     size_t query_limit = 0;
     size_t M = 64ULL << 20;
+    size_t fixed_cache_bytes = 0;
     BudgetMode budget_mode = BudgetMode::ESTIMATED;
 };
 
@@ -187,8 +190,9 @@ struct SummaryStats {
         "\nUsage: ./pgm_cam_covariance --data <file> --queries <file> [--keys <n>] [--M <MiB>]"
         " [--epsilons <e1,e2,...>] [--policies <fifo,lru,lfu,none>]"
         " [--strategies <all_in_once,one_by_one|all>]"
-        " [--budget-mode <estimated|measured>] [--summary-out <csv>] [--detail-out <csv>]"
-        " [--query-limit <n>]");
+        " [--budget-mode <estimated|measured|raw|fixed-cache>]"
+        " [--cache-M <MiB> | --cache-bytes <bytes>]"
+        " [--summary-out <csv>] [--detail-out <csv>] [--query-limit <n>]");
 }
 
 std::string trim(std::string s) {
@@ -238,6 +242,9 @@ BudgetMode parse_budget_mode(const std::string& value) {
     if (mode == "ESTIMATED") return BudgetMode::ESTIMATED;
     if (mode == "MEASURED") return BudgetMode::MEASURED;
     if (mode == "RAW") return BudgetMode::RAW;
+    if (mode == "FIXED_CACHE" || mode == "FIXED-CACHE" || mode == "FIXED") {
+        return BudgetMode::FIXED_CACHE;
+    }
     throw std::invalid_argument("unknown budget mode: " + value);
 }
 
@@ -246,6 +253,7 @@ std::string budget_mode_name(BudgetMode mode) {
         case BudgetMode::ESTIMATED: return "estimated";
         case BudgetMode::MEASURED: return "measured";
         case BudgetMode::RAW: return "raw";
+        case BudgetMode::FIXED_CACHE: return "fixed_cache";
         default: return "unknown";
     }
 }
@@ -257,6 +265,46 @@ size_t estimate_index_bytes(size_t total_keys, size_t epsilon) {
 size_t safe_subtract(size_t lhs, size_t rhs) {
     return lhs > rhs ? lhs - rhs : 0;
 }
+
+class RuntimePGMIndex : public pgm::PGMIndex<KeyType, 1, 4, float> {
+public:
+    explicit RuntimePGMIndex(const std::vector<KeyType>& data, size_t epsilon)
+        : epsilon_(epsilon)
+    {
+        if (epsilon_ == 0) {
+            throw std::invalid_argument("epsilon must be > 0");
+        }
+
+        this->n = data.size();
+        this->first_key = data.empty() ? KeyType(0) : data[0];
+        this->build(data.begin(), data.end(), epsilon_, 4, this->segments, this->levels_offsets);
+    }
+
+    pgm::ApproxPos search(const KeyType& key) const {
+        auto k = std::max(this->first_key, key);
+        auto it = this->segment_for_key(k);
+        size_t pos = std::min<size_t>((*it)(k), std::next(it)->intercept);
+        size_t lo = PGM_SUB_EPS(pos, epsilon_);
+        size_t hi = PGM_ADD_EPS(pos, epsilon_, this->n);
+        return {pos, lo, hi};
+    }
+
+    std::pair<size_t, size_t> estimate_pages_for_key(const KeyType& key) const {
+        const auto range = search(key);
+        const size_t page_lo = range.lo / ITEM_PER_PAGE;
+        size_t page_hi = page_lo;
+        if (range.hi > range.lo) {
+            page_hi = (range.hi - 1) / ITEM_PER_PAGE;
+        }
+        if (page_hi < page_lo) {
+            page_hi = page_lo;
+        }
+        return {page_lo, page_hi};
+    }
+
+private:
+    size_t epsilon_ = 0;
+};
 
 Config parse_args(int argc, char** argv) {
     Config cfg;
@@ -277,6 +325,10 @@ Config parse_args(int argc, char** argv) {
             cfg.total_keys = std::stoull(require_value("--keys"));
         } else if (arg == "--M") {
             cfg.M = std::stoull(require_value("--M")) << 20;
+        } else if (arg == "--cache-M") {
+            cfg.fixed_cache_bytes = std::stoull(require_value("--cache-M")) << 20;
+        } else if (arg == "--cache-bytes") {
+            cfg.fixed_cache_bytes = std::stoull(require_value("--cache-bytes"));
         } else if (arg == "--epsilons") {
             cfg.epsilons = parse_size_list(require_value("--epsilons"));
         } else if (arg == "--policies") {
@@ -303,6 +355,14 @@ Config parse_args(int argc, char** argv) {
     }
     if (cfg.total_keys == 0) {
         cfg.total_keys = detect_record_count(cfg.data_path);
+    }
+    if (cfg.budget_mode == BudgetMode::FIXED_CACHE) {
+        if (cfg.fixed_cache_bytes == 0) {
+            usage_error("--budget-mode fixed-cache requires --cache-M or --cache-bytes");
+        }
+        if (cfg.fixed_cache_bytes > cfg.M) {
+            usage_error("--cache-M/--cache-bytes cannot exceed --M");
+        }
     }
     return cfg;
 }
@@ -420,9 +480,19 @@ SummaryStats run_one_policy(
     stats.memory_budget_bytes = cfg.M;
     stats.estimated_index_bytes = estimated_index_bytes;
     stats.measured_index_bytes = measured_index_bytes;
-    stats.reserved_index_bytes =
-        cfg.budget_mode == BudgetMode::ESTIMATED ? estimated_index_bytes : measured_index_bytes;
-    stats.cache_bytes = (cfg.budget_mode == BudgetMode::RAW)?cfg.M:safe_subtract(cfg.M, stats.reserved_index_bytes);
+    if (cfg.budget_mode == BudgetMode::ESTIMATED) {
+        stats.reserved_index_bytes = estimated_index_bytes;
+        stats.cache_bytes = safe_subtract(cfg.M, stats.reserved_index_bytes);
+    } else if (cfg.budget_mode == BudgetMode::MEASURED) {
+        stats.reserved_index_bytes = measured_index_bytes;
+        stats.cache_bytes = safe_subtract(cfg.M, stats.reserved_index_bytes);
+    } else if (cfg.budget_mode == BudgetMode::FIXED_CACHE) {
+        stats.reserved_index_bytes = safe_subtract(cfg.M, cfg.fixed_cache_bytes);
+        stats.cache_bytes = cfg.fixed_cache_bytes;
+    } else {
+        stats.reserved_index_bytes = measured_index_bytes;
+        stats.cache_bytes = cfg.M;
+    }
     stats.cache_pages = stats.cache_bytes / PAGE_SIZE;
 
     cam::storage::DiskManager disk(
@@ -431,7 +501,7 @@ SummaryStats run_one_policy(
 
     const auto t0 = Clock::now();
     for (size_t i = 0; i < queries.size(); ++i) {
-        const auto result = cam::pgm_query::run_point_query(index, disk, queries[i], strategy);
+        const auto result = cam::point_query::run_point_query(index, disk, queries[i], strategy);
         stats.add(result);
 
         if (detail_out != nullptr) {
@@ -443,20 +513,19 @@ SummaryStats run_one_policy(
     return stats;
 }
 
-template <size_t Epsilon>
-void run_epsilon(
+void run_runtime_epsilon(
     const cam::storage::KeyFileLayout& data_layout,
     const std::vector<KeyType>& data,
     const std::vector<KeyType>& queries,
     const Config& cfg,
+    size_t epsilon,
     std::ostream& summary_out,
     std::ostream* detail_out)
 {
-    using Index = pgm::PGMIndex<KeyType, Epsilon>;
-    Index index(data);
+    RuntimePGMIndex index(data, epsilon);
 
     const size_t measured_index_bytes = index.size_in_bytes();
-    const size_t estimated_index_bytes = estimate_index_bytes(data.size(), Epsilon);
+    const size_t estimated_index_bytes = estimate_index_bytes(data.size(), epsilon);
 
     for (SearchStrategy strategy : cfg.strategies) {
         for (CachePolicy policy : cfg.policies) {
@@ -467,89 +536,13 @@ void run_epsilon(
                 data_layout,
                 queries,
                 cfg,
-                Epsilon,
+                epsilon,
                 estimated_index_bytes,
                 measured_index_bytes,
                 detail_out);
             write_summary_row(summary_out, stats);
         }
     }
-}
-
-template <typename Fn>
-void dispatch_epsilon(size_t epsilon, Fn&& fn) {
-#define CAM_DISPATCH_EPS_CASE(E) case E: fn(std::integral_constant<size_t, E>{}); break
-    switch (epsilon) {
-        CAM_DISPATCH_EPS_CASE(2);
-        CAM_DISPATCH_EPS_CASE(4);
-        CAM_DISPATCH_EPS_CASE(6);
-        CAM_DISPATCH_EPS_CASE(8);
-        CAM_DISPATCH_EPS_CASE(10);
-        CAM_DISPATCH_EPS_CASE(12);
-        CAM_DISPATCH_EPS_CASE(14);
-        CAM_DISPATCH_EPS_CASE(16);
-        CAM_DISPATCH_EPS_CASE(18);
-        CAM_DISPATCH_EPS_CASE(20);
-        CAM_DISPATCH_EPS_CASE(22);
-        CAM_DISPATCH_EPS_CASE(24);
-        CAM_DISPATCH_EPS_CASE(26);
-        CAM_DISPATCH_EPS_CASE(28);
-        CAM_DISPATCH_EPS_CASE(30);
-        CAM_DISPATCH_EPS_CASE(32);
-        CAM_DISPATCH_EPS_CASE(34);
-        CAM_DISPATCH_EPS_CASE(36);
-        CAM_DISPATCH_EPS_CASE(38);
-        CAM_DISPATCH_EPS_CASE(40);
-        CAM_DISPATCH_EPS_CASE(42);
-        CAM_DISPATCH_EPS_CASE(44);
-        CAM_DISPATCH_EPS_CASE(46);
-        CAM_DISPATCH_EPS_CASE(48);
-        CAM_DISPATCH_EPS_CASE(50);
-        CAM_DISPATCH_EPS_CASE(52);
-        CAM_DISPATCH_EPS_CASE(54);
-        CAM_DISPATCH_EPS_CASE(56);
-        CAM_DISPATCH_EPS_CASE(58);
-        CAM_DISPATCH_EPS_CASE(60);
-        CAM_DISPATCH_EPS_CASE(62);
-        CAM_DISPATCH_EPS_CASE(64);
-        CAM_DISPATCH_EPS_CASE(66);
-        CAM_DISPATCH_EPS_CASE(68);
-        CAM_DISPATCH_EPS_CASE(70);
-        CAM_DISPATCH_EPS_CASE(72);
-        CAM_DISPATCH_EPS_CASE(74);
-        CAM_DISPATCH_EPS_CASE(76);
-        CAM_DISPATCH_EPS_CASE(78);
-        CAM_DISPATCH_EPS_CASE(80);
-        CAM_DISPATCH_EPS_CASE(82);
-        CAM_DISPATCH_EPS_CASE(84);
-        CAM_DISPATCH_EPS_CASE(86);
-        CAM_DISPATCH_EPS_CASE(88);
-        CAM_DISPATCH_EPS_CASE(90);
-        CAM_DISPATCH_EPS_CASE(92);
-        CAM_DISPATCH_EPS_CASE(94);
-        CAM_DISPATCH_EPS_CASE(96);
-        CAM_DISPATCH_EPS_CASE(98);
-        CAM_DISPATCH_EPS_CASE(100);
-        CAM_DISPATCH_EPS_CASE(102);
-        CAM_DISPATCH_EPS_CASE(104);
-        CAM_DISPATCH_EPS_CASE(106);
-        CAM_DISPATCH_EPS_CASE(108);
-        CAM_DISPATCH_EPS_CASE(110);
-        CAM_DISPATCH_EPS_CASE(112);
-        CAM_DISPATCH_EPS_CASE(114);
-        CAM_DISPATCH_EPS_CASE(116);
-        CAM_DISPATCH_EPS_CASE(118);
-        CAM_DISPATCH_EPS_CASE(120);
-        CAM_DISPATCH_EPS_CASE(122);
-        CAM_DISPATCH_EPS_CASE(124);
-        CAM_DISPATCH_EPS_CASE(126);
-        CAM_DISPATCH_EPS_CASE(128);
-        default:
-            throw std::invalid_argument(
-                "unsupported epsilon: " + std::to_string(epsilon) +
-                " (supported: even epsilons in [2, 128])");
-    }
-#undef CAM_DISPATCH_EPS_CASE
 }
 
 } // namespace
@@ -594,10 +587,7 @@ int main(int argc, char** argv) {
         }
 
         for (size_t epsilon : cfg.epsilons) {
-            dispatch_epsilon(epsilon, [&](auto eps_tag) {
-                constexpr size_t Eps = decltype(eps_tag)::value;
-                run_epsilon<Eps>(data_layout, data, queries, cfg, *summary_out, detail_out);
-            });
+            run_runtime_epsilon(data_layout, data, queries, cfg, epsilon, *summary_out, detail_out);
         }
         return 0;
     } catch (const std::exception& e) {

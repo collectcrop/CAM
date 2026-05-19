@@ -13,14 +13,16 @@ except ImportError:
     from cache_hit_models import cache_hit_ratio as shared_cache_hit_ratio, validate_ratio as shared_validate_ratio, cache_hit_ratio 
 
 alpha = 1
-DATASETS_DIRECTORY = "/mnt/backup_disk/Dataset/public/SOSD/"
+DATASETS_DIRECTORY = "/mnt/data/Dataset/public/SOSD/"
 LOG_DIRECTORY = "build/log/"
 # BUDGET_MODE = "RAW"
 BUDGET_MODE = "ESTIMATED"
 LEARNING_QUERY_FRACTION = 0.3
 
 
-def take_learning_query_prefix(queries, fraction=LEARNING_QUERY_FRACTION):
+def take_learning_query_prefix(queries, fraction=None):
+    if fraction is None:
+        fraction = LEARNING_QUERY_FRACTION
     queries = np.asarray(queries, dtype=np.uint64)
     if queries.size == 0 or fraction >= 1.0:
         return queries
@@ -114,7 +116,17 @@ def _page_prob_table_for_epsilon(epsilon, ipp):
 
     return d_vals, table
 
-def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=False, H=None, Q=None):
+def estimate_page_counts_from_queryfile(
+    query_file,
+    data,
+    epsilon,
+    ipp,
+    use_fft=False,
+    H=None,
+    Q=None,
+    return_first_touch=False,
+    first_touch_scale=1.0,
+):
     """
     Optimized exact page-level estimator for point queries.
 
@@ -139,6 +151,7 @@ def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=
       page_counts: expected per-page reference counts
       T_pos: None (kept for interface compatibility)
       Q: number of queries
+      expected_distinct_pages: returned only when return_first_touch=True
     """
     assert isinstance(data, np.ndarray)
     N = len(data)
@@ -148,6 +161,35 @@ def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=
     d_vals, prob_table = _page_prob_table_for_epsilon(epsilon, ipp)
 
     page_counts = np.zeros(P, dtype=np.float64)
+    log_no_touch = np.zeros(P, dtype=np.float64) if return_first_touch else None
+
+    def accumulate_first_touch(target_pages, touch_prob, multiplicity=None):
+        if log_no_touch is None:
+            return
+        if target_pages.size == 0:
+            return
+
+        prob = np.clip(np.asarray(touch_prob, dtype=np.float64), 0.0, 1.0)
+        log_terms = np.empty_like(prob)
+        certain = prob >= 1.0
+        log_terms[certain] = -np.inf
+        log_terms[~certain] = np.log1p(-prob[~certain])
+        if multiplicity is not None:
+            log_terms = np.asarray(multiplicity, dtype=np.float64) * log_terms
+
+        log_no_touch[:] += np.bincount(target_pages, weights=log_terms, minlength=P)
+
+    def finish(Q_local):
+        if not return_first_touch:
+            return page_counts, None, Q_local
+
+        scale = max(0.0, float(first_touch_scale))
+        if scale <= 0.0:
+            expected_distinct_pages = 0.0
+        else:
+            scaled_log_no_touch = log_no_touch * scale
+            expected_distinct_pages = float(np.sum(-np.expm1(np.minimum(scaled_log_no_touch, 0.0))))
+        return page_counts, None, Q_local, expected_distinct_pages
 
     # ------------------------------------------------------------
     # Case A: direct positions path (best when sweeping is not cached)
@@ -166,8 +208,9 @@ def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=
             w = prob_table[row, offsets[valid]]
             # bincount accumulates all references to target pages in C
             page_counts += np.bincount(tgt[valid], weights=w, minlength=P)
+            accumulate_first_touch(tgt[valid], w)
 
-        return page_counts, None, Q_local
+        return finish(Q_local)
 
     # ------------------------------------------------------------
     # Case B: cached positions
@@ -186,8 +229,9 @@ def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=
 
             w = prob_table[row, offsets[valid]]
             page_counts += np.bincount(tgt[valid], weights=w, minlength=P)
+            accumulate_first_touch(tgt[valid], w)
 
-        return page_counts, None, Q_local
+        return finish(Q_local)
 
     # ------------------------------------------------------------
     # Case C: dense histogram H[r]
@@ -198,7 +242,7 @@ def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=
 
     nz = np.flatnonzero(H)
     if nz.size == 0:
-        return page_counts, None, 0 if Q is None else Q
+        return finish(0 if Q is None else Q)
 
     cnt = H[nz].astype(np.float64, copy=False)
     Q_local = int(round(cnt.sum())) if Q is None else Q
@@ -214,8 +258,9 @@ def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=
 
         w = cnt[valid] * prob_table[row, offsets[valid]]
         page_counts += np.bincount(tgt[valid], weights=w, minlength=P)
+        accumulate_first_touch(tgt[valid], prob_table[row, offsets[valid]], cnt[valid])
 
-    return page_counts, None, Q_local
+    return finish(Q_local)
 
 # def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=False, H=None, Q=None):
 #     """
@@ -337,17 +382,6 @@ def che_characteristic_time(qs, C, t0=1e-9, grow=10.0, max_iter=60):
 def che_hit_rates(qs, t_C):
     return 1 - np.exp(-qs * t_C)
 
-def predict_height_segments(epsilon,epsilon_i,n,k):
-    h = 1
-    num = math.ceil(n/(k*epsilon**2))
-    segments = num
-    while (num>1):
-        h = h+1
-        num = math.ceil(num/(k*epsilon_i**2))
-        segments += num
-    return h,segments            # 1+math.ceil(math.log(n/(k*epsilon**2),k*epsilon_i**2))
-
-
 # def expected_DAC(epsilon, ipp):
 #     dac = 0
 #     for k in range(ipp + 1):
@@ -361,67 +395,8 @@ def expected_DAC(epsilon, ipp ,s="all_in_once"):
     elif s == "one_by_one":
         return 1 + (epsilon/ipp)
 
-def expected_IAC(epsilon, ipp):
-    return 1 + (2*epsilon/ipp)
-
-
-
-def fifo_random_characteristic_time(qs, C, t0=1e-12, grow=10.0, max_iter=80):
-    """
-    Solve tau_C from:
-        C = sum_i (q_i * tau) / (1 - q_i + q_i * tau)
-    qs should sum to 1.
-    """
-    qs = np.asarray(qs, dtype=np.float64)
-    if np.any(qs < 0) or np.any(~np.isfinite(qs)):
-        raise ValueError("qs must be finite and non-negative")
-    qs = qs[qs > 0]
-    m = qs.size
-    if C <= 0:
-        return 0.0
-    if C >= m:
-        return np.inf
-    def f(tau):
-        vals = (qs * tau) / (1.0 - qs + qs * tau)
-        return np.sum(vals) - C
-    a = t0
-    fa = f(a)
-    b = a
-    for _ in range(max_iter):
-        b *= grow
-        fb = f(b)
-        if fa * fb <= 0:
-            return brentq(f, a, b)
-    return np.inf
-
-def fifo_random_hit_rates(qs, tau_C):
-    """
-    Per-object hit probability under FIFO/RANDOM approximation.
-    """
-    qs = np.asarray(qs, dtype=np.float64)
-    if np.isinf(tau_C):
-        return np.ones_like(qs)
-    return (qs * tau_C) / (1.0 - qs + qs * tau_C)
-
-def fifo_random_hit_ratio(qs, C):
-    """
-    Approximate FIFO/RANDOM hit ratio under IRM.
-    """
-    qs = np.asarray(qs, dtype=np.float64)
-    qs = qs[qs > 0]
-    if qs.size == 0 or C <= 0:
-        return 0.0
-
-    m = qs.size
-    if C >= m:
-        return 1.0
-
-    tau_C = fifo_random_characteristic_time(qs, C)
-    if np.isinf(tau_C):
-        return 1.0
-
-    h_i = fifo_random_hit_rates(qs, tau_C)
-    return float(np.sum(qs * h_i))
+# def expected_IAC(epsilon, ipp):
+#     return 1 + (2*epsilon/ipp)
 
 def validate_ratio(ratio):
     if ratio >= 1.0:
@@ -755,6 +730,7 @@ def range_cost_function(
     data_file="",
     policy="LRU",
     conservative=True,
+    cold_start_correction=False,
 ):
     """
     Fast CAM estimator for range queries.
@@ -767,8 +743,6 @@ def range_cost_function(
 
     where avg_RDAC is estimated from the same conservative page interval.
     """
-    import math
-    import numpy as np
 
     epsilon = int(epsilon)
     ipp = int(ipp)
@@ -806,6 +780,10 @@ def range_cost_function(
     if h is None:
         buffer_ratio = cache_hit_ratio(policy, C, q_nonzero, Q=total_refs)
         h = validate_ratio(buffer_ratio)
+        if cold_start_correction and total_refs > 0:
+            expected_distinct_pages = float(np.count_nonzero(page_counts > 0))
+            cold_miss_ratio = validate_ratio(expected_distinct_pages / total_refs)
+            h = min(h, 1.0 - cold_miss_ratio)
 
     avg_RDAC = total_refs / len(queries)
 
@@ -817,35 +795,83 @@ def range_cost_function(
     
 def cost_function(epsilon, n, seg_size, M, ipp, ps,
                   query_file="", data_file="", s="all_in_once", cache_policy="LRU",
-                  data_arr=None, H=None, Q=None):
-    M_index = n * seg_size / (2 * epsilon)
-    M_buffer = M - M_index if BUDGET_MODE!="RAW" else M
+                  data_arr=None, H=None, Q=None, measured_index_bytes=None,
+                  cold_start_correction=False, first_touch_scale=1.0,
+                  return_detail=False):
+    if BUDGET_MODE == "RAW":
+        M_index = 0
+        M_buffer = M
+    elif BUDGET_MODE == "MEASURED":
+        if measured_index_bytes is None:
+            raise ValueError("BUDGET_MODE='MEASURED' requires measured_index_bytes")
+        M_index = float(measured_index_bytes)
+        M_buffer = M - M_index
+    else:
+        M_index = n * seg_size / (2 * epsilon)
+        M_buffer = M - M_index
     C = M_buffer/ps
+    cache_pages = max(0, int(C))
     total_pages = math.ceil(n / ipp)
-    if (C==0.0):
+    detail = {
+        "index_bytes": float(M_index),
+        "buffer_bytes": float(max(0.0, M_buffer)),
+        "cache_pages": float(cache_pages),
+        "total_pages": float(total_pages),
+        "total_page_requests": 0.0,
+        "expected_distinct_pages": 0.0,
+        "cold_miss_ratio": 0.0,
+        "steady_hit_ratio": 0.0,
+    }
+    if cache_pages <= 0:
         h = 0.0
     else:
-        data = data_arr if data_arr is not None else np.fromfile(data_file,dtype=np.uint64)[1:]
-        page_counts, _ , Q_local = estimate_page_counts_from_queryfile(
-            query_file, data, epsilon, ipp, H=H, Q=Q
-        )
+        data = data_arr if data_arr is not None else np.fromfile(data_file,dtype=np.uint64)
+        if cold_start_correction:
+            page_counts, _ , Q_local, expected_distinct_pages = estimate_page_counts_from_queryfile(
+                query_file,
+                data,
+                epsilon,
+                ipp,
+                H=H,
+                Q=Q,
+                return_first_touch=True,
+                first_touch_scale=first_touch_scale,
+            )
+        else:
+            page_counts, _ , Q_local = estimate_page_counts_from_queryfile(
+                query_file, data, epsilon, ipp, H=H, Q=Q
+            )
+            expected_distinct_pages = 0.0
         total_page_requests = page_counts.sum()
+        scaled_total_page_requests = float(total_page_requests) * max(0.0, float(first_touch_scale))
+        detail["total_page_requests"] = scaled_total_page_requests
+        detail["expected_distinct_pages"] = float(expected_distinct_pages)
         if total_page_requests <= 0:
             h = 0.0
         else:
             q = page_counts / total_page_requests
-            h = shared_cache_hit_ratio(cache_policy, int(C), q, Q_local)
+            h = shared_cache_hit_ratio(cache_policy, cache_pages, q, Q_local)
+            detail["steady_hit_ratio"] = float(shared_validate_ratio(h))
+            if cold_start_correction and scaled_total_page_requests > 0:
+                cold_miss_ratio = expected_distinct_pages / scaled_total_page_requests
+                cold_miss_ratio = shared_validate_ratio(cold_miss_ratio)
+                detail["cold_miss_ratio"] = float(cold_miss_ratio)
+                h = min(h, 1.0 - cold_miss_ratio)
         # q = page_counts / total_page_requests
         # q = np.sort(q)[::-1]
         # buffer_ratio = sample_ratio(C, total_pages, q, Q)
         
         
         h = shared_validate_ratio(h)
-    return (1 - h) * expected_DAC(epsilon, ipp, s), h
+    estimated_io = (1 - h) * expected_DAC(epsilon, ipp, s)
+    if return_detail:
+        return estimated_io, h, detail
+    return estimated_io, h
 
 def getExpectedRangeCostPerEpsilon(ipp, seg_size, M, n, ps,
                                    data_file="",query_file="",cache_policy="LRU",
-                                   log_path=""):
+                                   log_path="",
+                                   cold_start_correction=False):
     data = f"{DATASETS_DIRECTORY}{data_file}"
     query = f"{DATASETS_DIRECTORY}{query_file}"
     eps_list = []
@@ -856,7 +882,8 @@ def getExpectedRangeCostPerEpsilon(ipp, seg_size, M, n, ps,
     for eps in range(least_eps if (least_eps%2==0) else least_eps+1, 129, 2):     
         t1 = time.time()
         cost,h = range_cost_function(eps, n, seg_size, M, ipp, ps, query, data,
-                                     cache_policy)
+                                     cache_policy,
+                                     cold_start_correction=cold_start_correction)
         eps_list.append(eps)
         cost_list.append(cost)
         h_list.append(h)
@@ -886,10 +913,12 @@ def getExpectedRangeCostPerEpsilon(ipp, seg_size, M, n, ps,
 
 def getExpectedCostPerEpsilon(ipp, seg_size, M, n, ps,
                               data_file="",query_file="",s="all_in_once",
-                              cache_policy="LRU",log_path=""):
+                              cache_policy="LRU",log_path="",
+                              cold_start_correction=False,
+                              first_touch_scale=1.0):
     data = f"{DATASETS_DIRECTORY}{data_file}"
     query = f"{DATASETS_DIRECTORY}{query_file}"
-    data_arr = np.fromfile(data, dtype=np.uint64)[1:]
+    data_arr = np.fromfile(data, dtype=np.uint64)
     # H, Q = prepare_query_histogram(query, data_arr)
     H, Q = prepare_query_position_cache(query, data_arr)
     eps_list = []
@@ -902,7 +931,9 @@ def getExpectedCostPerEpsilon(ipp, seg_size, M, n, ps,
         cost,h = cost_function(
             eps, n, seg_size, M, ipp, ps,
             query, data, s, cache_policy,
-            data_arr=data_arr, H=H, Q=Q
+            data_arr=data_arr, H=H, Q=Q,
+            cold_start_correction=cold_start_correction,
+            first_touch_scale=first_touch_scale,
         )
         eps_list.append(eps)
         cost_list.append(cost)

@@ -31,15 +31,15 @@ inline size_t FCLAMP(double inp, double bound) {
 }
 
 uint64_t lookup_with_leaf(uint64_t key, size_t* err, size_t* leaf) {
-  size_t modelIndex;
   double fpred;
+  size_t modelIndex;
   fpred = linear(L0_PARAMETER0, L0_PARAMETER1, (double)key);
   modelIndex = FCLAMP(fpred, 32768.0 - 1.0);
   fpred = linear(*((double*) (L1_PARAMETERS + (modelIndex * 24) + 0)), *((double*) (L1_PARAMETERS + (modelIndex * 24) + 8)), (double)key);
   *err = *((uint64_t*) (L1_PARAMETERS + (modelIndex * 24) + 16));
 
   if (leaf) *leaf = modelIndex;
-  return FCLAMP(fpred, 10000000.0 - 1.0);
+  return FCLAMP(fpred, 200000000.0 - 1.0);
 }
 uint64_t lookup(uint64_t key, size_t* err) {
   return lookup_with_leaf(key, err, nullptr);

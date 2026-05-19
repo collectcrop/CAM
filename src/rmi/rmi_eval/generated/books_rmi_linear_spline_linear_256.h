@@ -4,7 +4,7 @@ namespace books_rmi_linear_spline_linear_256 {
 bool load(char const* dataPath);
 void cleanup();
 const size_t RMI_SIZE = 6160;
-const uint64_t BUILD_TIME_NS = 426271513;
+const uint64_t BUILD_TIME_NS = 9823978997;
 const char NAME[] = "books_rmi_linear_spline_linear_256";
 uint64_t lookup_with_leaf(uint64_t key, size_t* err, size_t* leaf);
 uint64_t lookup(uint64_t key, size_t* err);

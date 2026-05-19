@@ -119,9 +119,12 @@ RunResult run_one_policy(
     st.queries = queries.size();
 
     Index index(data);
+    const size_t estimated_index_bytes = 16 * data.size() / (2 * Eps);
+    const size_t cache_bytes =
+        cfg.M > estimated_index_bytes ? cfg.M - estimated_index_bytes : 0;
     cam::storage::DiskManager disk(
         data_layout,
-        cam::storage::make_page_cache(policy, cfg.M - 16 * data.size() / (2 * Eps)));
+        cam::storage::make_page_cache(policy, cache_bytes));
 
     auto t0 = Clock::now();
     for (KeyType q : queries) {
