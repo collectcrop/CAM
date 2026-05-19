@@ -10,7 +10,7 @@
 #include "../storage/KeyFile.hpp"
 #include "../storage/PageSearch.hpp"
 
-namespace cam::pgm_query {
+namespace cam::point_query {
 
 struct PointQueryMetrics {
     size_t dac = 0;
@@ -177,4 +177,4 @@ PointQueryResult run_point_query(
     }
 }
 
-} // namespace cam::pgm_query
+} // namespace cam::point_query

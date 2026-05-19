@@ -82,7 +82,7 @@ Config parse_args(int argc, char** argv) {
         } else if (arg == "--M") {
             cfg.M = std::stoull(require_value("--M")) << 20;
         } else if (arg == "--strategies") {
-            cfg.strategies = cam::pgm_query::parse_search_strategy_list(require_value("--strategies"));
+            cfg.strategies = cam::point_query::parse_search_strategy_list(require_value("--strategies"));
         } else if (arg == "-h" || arg == "--help") {
             usage_error("help requested");
         } else {
@@ -125,7 +125,7 @@ RunResult run_one_policy(
 
     auto t0 = Clock::now();
     for (KeyType q : queries) {
-        const auto result = cam::pgm_query::run_point_query(index, disk, q, strategy);
+        const auto result = cam::point_query::run_point_query(index, disk, q, strategy);
         st.page_requests += result.metrics.dac;
         st.cache_hits += result.metrics.buffer_hits;
         st.cache_misses += result.metrics.cam_io;
@@ -164,7 +164,7 @@ void print_row(const RunResult& st, size_t index_bytes) {
     std::cout
         << Eps << ','
         << cam::cache::policy_name(st.policy) << ','
-        << cam::pgm_query::search_strategy_name(st.strategy) << ','
+        << cam::point_query::search_strategy_name(st.strategy) << ','
         << st.queries << ','
         << st.found << ','
         << st.page_requests << ','

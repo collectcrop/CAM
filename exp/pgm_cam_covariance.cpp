@@ -86,7 +86,7 @@ struct SummaryStats {
 
     long long wall_ns = 0;
 
-    void add(const cam::pgm_query::PointQueryResult& result) {
+    void add(const cam::point_query::PointQueryResult& result) {
         const double dac = static_cast<double>(result.metrics.dac);
         const double h = result.metrics.dac == 0
             ? 0.0
@@ -282,7 +282,7 @@ Config parse_args(int argc, char** argv) {
         } else if (arg == "--policies") {
             cfg.policies = cam::cache::parse_policy_list(require_value("--policies"));
         } else if (arg == "--strategies") {
-            cfg.strategies = cam::pgm_query::parse_search_strategy_list(require_value("--strategies"));
+            cfg.strategies = cam::point_query::parse_search_strategy_list(require_value("--strategies"));
         } else if (arg == "--budget-mode") {
             cfg.budget_mode = parse_budget_mode(require_value("--budget-mode"));
         } else if (arg == "--summary-out") {
@@ -331,7 +331,7 @@ void write_summary_row(std::ostream& out, const SummaryStats& stats) {
     out << std::fixed << std::setprecision(10)
         << stats.epsilon << ','
         << cam::cache::policy_name(stats.policy) << ','
-        << cam::pgm_query::search_strategy_name(stats.strategy) << ','
+        << cam::point_query::search_strategy_name(stats.strategy) << ','
         << budget_mode_name(stats.budget_mode) << ','
         << stats.memory_budget_bytes << ','
         << stats.cache_bytes << ','
@@ -377,7 +377,7 @@ void write_detail_row(
     SearchStrategy strategy,
     size_t query_idx,
     KeyType query_key,
-    const cam::pgm_query::PointQueryResult& result)
+    const cam::point_query::PointQueryResult& result)
 {
     const double h = result.metrics.dac == 0
         ? 0.0
@@ -387,7 +387,7 @@ void write_detail_row(
     out << std::fixed << std::setprecision(10)
         << epsilon << ','
         << cam::cache::policy_name(policy) << ','
-        << cam::pgm_query::search_strategy_name(strategy) << ','
+        << cam::point_query::search_strategy_name(strategy) << ','
         << query_idx << ','
         << query_key << ','
         << result.metrics.dac << ','

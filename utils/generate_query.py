@@ -372,19 +372,19 @@ def main():
     
     # sizeList = [1e7,2e7,3e7,5e7,7e7,9e7,1e8,2e8]
     # datasets = ["fb","books","osm_cellids","wiki_ts"]
-    # sizeList = [2e8]
-    # datasets = ["books"]
+    sizeList = [1e7]
+    datasets = ["books"]
     """ point """
-    # num_queries = 1000000       #1000000
-    # for dataset in datasets:
-    #     for size in sizeList:
-    #         print(f"[*] Generate queries for {dataset}_{int(size/1e6)}M_uint64_unique")
-    #         raw = np.fromfile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique", dtype=np.uint64)
-    #         keys = raw
-    #         print(f"[*] Loaded {len(keys)} keys.")
-    #         queries = generate_realistic_queries_from_data(keys,num_queries)
-    #         queries.tofile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.query.bin")
-    #         print(f"[+] save queries to {DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.query.bin successfully!")
+    num_queries = 8000000       #1000000
+    for dataset in datasets:
+        for size in sizeList:
+            print(f"[*] Generate queries for {dataset}_{int(size/1e6)}M_uint64_unique")
+            raw = np.fromfile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique", dtype=np.uint64)
+            keys = raw
+            print(f"[*] Loaded {len(keys)} keys.")
+            queries = generate_realistic_queries_from_data(keys,num_queries)
+            queries.tofile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.8Mquery.bin")
+            print(f"[+] save queries to {DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.8Mquery.bin successfully!")
     
     """ range """
     # num_queries = 4000000
@@ -421,20 +421,20 @@ def main():
     #         print(f"[+] save range queries to {out_path} successfully!")
     
     """ join """
-    sizeList = [2e8]
-    datasets = ["books"]
-    num_queries = 1000000
-    for dataset in datasets:
-        for size in sizeList:
-            print(f"[*] Generate queries for {dataset}_{int(size/1e6)}M_uint64_unique")
-            raw = np.fromfile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique", dtype=np.uint64)
-            keys = raw
-            print(f"[*] Loaded {len(keys)} keys.")
-            # queries = sample_unique_mixture(keys,num_queries)
-            queries = sample_unique_mixture(keys,num_queries,hotpot_ratio=0.4,zipf_ratio=0.3,oversample=100,return_sorted=False)
-            print(f"[*] Loaded {len(queries)} queries.")
-            queries.tofile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.{int(num_queries/1e6)}Mtable1.bin")
-            print(f"[+] save queries to {DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.{int(num_queries/1e6)}Mtable1.bin successfully!")
+    # sizeList = [2e8]
+    # datasets = ["books"]
+    # num_queries = 1000000
+    # for dataset in datasets:
+    #     for size in sizeList:
+    #         print(f"[*] Generate queries for {dataset}_{int(size/1e6)}M_uint64_unique")
+    #         raw = np.fromfile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique", dtype=np.uint64)
+    #         keys = raw
+    #         print(f"[*] Loaded {len(keys)} keys.")
+    #         # queries = sample_unique_mixture(keys,num_queries)
+    #         queries = sample_unique_mixture(keys,num_queries,hotpot_ratio=0.4,zipf_ratio=0.3,oversample=100,return_sorted=False)
+    #         print(f"[*] Loaded {len(queries)} queries.")
+    #         queries.tofile(f"{DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.{int(num_queries/1e6)}Mtable1.bin")
+    #         print(f"[+] save queries to {DATASETS_DIRECTORY}{dataset}_{int(size/1e6)}M_uint64_unique.{int(num_queries/1e6)}Mtable1.bin successfully!")
     
     # datasets = ["books"]
     # num_queries = 100000

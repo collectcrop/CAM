@@ -7,10 +7,28 @@ from scipy.special import zeta
 from collections import Counter
 from scipy.signal import fftconvolve
 
+try:
+    from .cache_hit_models import cache_hit_ratio as shared_cache_hit_ratio, validate_ratio as shared_validate_ratio, cache_hit_ratio 
+except ImportError:
+    from cache_hit_models import cache_hit_ratio as shared_cache_hit_ratio, validate_ratio as shared_validate_ratio, cache_hit_ratio 
+
 alpha = 1
 DATASETS_DIRECTORY = "/mnt/backup_disk/Dataset/public/SOSD/"
 LOG_DIRECTORY = "build/log/"
-BUDGET_MODE = "RAW"
+# BUDGET_MODE = "RAW"
+BUDGET_MODE = "ESTIMATED"
+LEARNING_QUERY_FRACTION = 0.3
+
+
+def take_learning_query_prefix(queries, fraction=LEARNING_QUERY_FRACTION):
+    queries = np.asarray(queries, dtype=np.uint64)
+    if queries.size == 0 or fraction >= 1.0:
+        return queries
+
+    keep = max(1, int(queries.shape[0] * fraction))
+    return queries[:keep]
+
+
 def build_uniform_box_kernel(epsilon):
     L = 2 * epsilon + 1
     return np.ones(L, dtype=np.float64) / L
@@ -33,6 +51,7 @@ def prepare_query_histogram(query_file, data):
         queries = np.fromfile(query_file, dtype=np.uint64)
     else:
         queries = np.asarray(query_file, dtype=np.uint64)
+    queries = take_learning_query_prefix(queries)
 
     Q = len(queries)
     N = len(data)
@@ -50,11 +69,16 @@ def prepare_query_positions(query_file, data):
         queries = np.fromfile(query_file, dtype=np.uint64)
     else:
         queries = np.asarray(query_file, dtype=np.uint64)
+    queries = take_learning_query_prefix(queries)
 
     N = len(data)
     pos = np.searchsorted(data, queries, side='right') - 1
     pos = np.clip(pos, 0, N - 1).astype(np.int64)
     return pos, len(pos)
+
+def prepare_query_position_cache(query_file, data):
+    pos, Q = prepare_query_positions(query_file, data)
+    return {"kind": "positions", "pos": pos}, Q
 
 def _page_prob_table_for_epsilon(epsilon, ipp):
     """
@@ -101,7 +125,6 @@ def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=
          - convert only the nonzero support of H into sparse (page, offset, count)
       3) H is a dict produced by prepare_query_positions/prepare_sparse_histogram-like cache:
          - H = {"kind": "positions", "pos": pos}
-         - H = {"kind": "sparse_hist", "nz": nz, "cnt": cnt}
 
     Args:
       query_file: binary query file path or numpy array
@@ -167,29 +190,7 @@ def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=
         return page_counts, None, Q_local
 
     # ------------------------------------------------------------
-    # Case C: cached sparse histogram
-    # ------------------------------------------------------------
-    if isinstance(H, dict) and H.get("kind") == "sparse_hist":
-        nz = np.asarray(H["nz"], dtype=np.int64)
-        cnt = np.asarray(H["cnt"], dtype=np.float64)
-        Q_local = int(round(cnt.sum())) if Q is None else Q
-
-        pages = nz // ipp
-        offsets = nz % ipp
-
-        for row, d in enumerate(d_vals):
-            tgt = pages + d
-            valid = (tgt >= 0) & (tgt < P)
-            if not np.any(valid):
-                continue
-
-            w = cnt[valid] * prob_table[row, offsets[valid]]
-            page_counts += np.bincount(tgt[valid], weights=w, minlength=P)
-
-        return page_counts, None, Q_local
-
-    # ------------------------------------------------------------
-    # Case D: dense histogram H[r]
+    # Case C: dense histogram H[r]
     # ------------------------------------------------------------
     H = np.asarray(H)
     if H.shape[0] != N:
@@ -363,56 +364,6 @@ def expected_DAC(epsilon, ipp ,s="all_in_once"):
 def expected_IAC(epsilon, ipp):
     return 1 + (2*epsilon/ipp)
 
-def uniform_ratio(C,N):
-    return C / N
-
-def zipf_ratio(C,N,alpha):
-    qs = zipf_popularity(N, alpha)
-    t_C = che_characteristic_time(qs, C)
-    hit_rates = che_hit_rates(qs, t_C)
-    return np.sum(qs * hit_rates)
-
-# def sample_ratio(C,N,qs,Q):
-#     t_C = che_characteristic_time(qs, C, Q)
-#     print("[+] successfully solved characteristic_time")
-#     hit_rates = che_hit_rates(qs, t_C)
-#     return np.sum(qs * hit_rates)
-
-def lru_hit_ratio(qs, C, Q=0):
-    """
-    Che's approximation for LRU.
-    qs must be a probability vector summing to 1.
-    """
-    m = int(np.sum(qs > 0))
-    if C >= m:
-        return 1.0
-
-    t_C = che_characteristic_time(qs, C)
-    if np.isinf(t_C):
-        return 1.0
-
-    hit_rates = 1.0 - np.exp(-qs * t_C)
-    return float(np.sum(qs * hit_rates))
-
-def lfu_hit_ratio(qs, C):
-    """
-    Exact LFU hit ratio under IRM.
-    qs must be a probability vector summing to 1.
-    """
-    if C <= 0:
-        return 0.0
-
-    qs = np.asarray(qs, dtype=np.float64)
-    qs = qs[qs > 0]
-    if qs.size == 0:
-        return 0.0
-
-    m = qs.size
-    if C >= m:
-        return 1.0
-
-    qs_sorted = np.sort(qs)[::-1]
-    return float(np.sum(qs_sorted[:int(C)]))
 
 
 def fifo_random_characteristic_time(qs, C, t0=1e-12, grow=10.0, max_iter=80):
@@ -713,150 +664,156 @@ def get_RDAC(rlo, rhi, epsilon, ipp):
 
     return out.reshape(rlo.shape)
 
-def cache_hit_ratio(policy, C, qs, Q=0):
+def estimate_page_counts_from_range_queryfile(
+    lo_keys,
+    hi_keys,
+    data,
+    epsilon,
+    ipp,
+    conservative=True,
+):
     """
-    policy: "LRU" | "LFU" | "FIFO" | "RANDOM"
-    C: cache capacity in pages
-    qs: page popularity distribution (sum(qs)=1)
-    Q: optional trace length, only for degenerate handling
-    """
-    qs = np.asarray(qs, dtype=np.float64)
-    if qs.size == 0 or C <= 0:
-        return 0.0
+    Fast conservative range-query page reference estimator.
 
-    # only positive-probability objects matter
-    qs = qs[qs > 0]
-    if qs.size == 0:
-        return 0.0
+    For each range query [lo, hi], estimate the accessed page interval as:
 
-    # normalize for safety
-    s = qs.sum()
-    if s <= 0:
-        return 0.0
-    qs = qs / s
+        [ floor((r(lo) - 2eps) / ipp),
+          floor((r(hi) + 2eps) / ipp) ]
 
-    if policy.upper() == "LRU":
-        return lru_hit_ratio(qs, C, Q)
-    elif policy.upper() == "LFU":
-        return lfu_hit_ratio(qs, C)
-    elif policy.upper() in ("FIFO", "RANDOM"):
-        return fifo_random_hit_ratio(qs, C)
-    else:
-        raise ValueError(f"Unknown policy: {policy}")
-    
-    
-def estimate_page_counts_from_range_queryfile(rlos, rhis, epsilon, ipp, N):
+    and aggregate all intervals using a difference array.
+
+    Args:
+        lo_keys: np.ndarray, lower-bound keys.
+        hi_keys: np.ndarray, upper-bound keys.
+        data: sorted np.ndarray of uint64 keys.
+        epsilon: learned-index error bound.
+        ipp: items per page.
+        conservative:
+            True  -> use [r(lo)-2eps, r(hi)+2eps]
+            False -> use only true range [r(lo), r(hi)]
+
+    Returns:
+        page_counts: np.ndarray of shape [num_pages],
+                     expected/conservative reference count per page.
+        total_refs: float, total estimated page references.
+        q: np.ndarray, normalized page request probability.
     """
-    Expected per-page reference counts under conditioned-uniform error pairs:
-      u,v in [-eps,eps], v >= u - delta, delta=rhi-rlo
-    and all-at-once fetch interval [S(u), E(v)] inclusive, where
-      S(u)=floor((rlo+u-eps)/ipp), E(v)=floor((rhi+v+eps)/ipp).
-    We exploit that pages in [plo, phi] are always referenced with prob 1,
-    and only a small number of boundary-adjacent pages have fractional probs.
-    """
+    import math
+    import numpy as np
+
     eps = int(epsilon)
-    C = int(ipp)
-    u_vals = np.arange(-eps, eps + 1, dtype=np.int64)  # [-eps..eps]
-    count = Counter()
+    ipp = int(ipp)
+    N = len(data)
+    num_pages = math.ceil(N / ipp)
 
-    # true positions
-    # lo_pos = np.searchsorted(data, lo_keys, side='right') - 1
-    # hi_pos = np.searchsorted(data, hi_keys, side='right') - 1
-    # lo_pos = np.clip(lo_pos, 0, N - 1).astype(np.int64)
-    # hi_pos = np.clip(hi_pos, 0, N - 1).astype(np.int64)
+    lo_pos = np.searchsorted(data, lo_keys, side="right") - 1
+    hi_pos = np.searchsorted(data, hi_keys, side="right") - 1
 
-    # ensure lo_pos <= hi_pos (robust)
-    swap = rlos > rhis
-    if np.any(swap):
-        print("[Error] rhi < rlo Detected.")
-        sys.exit(1)
+    lo_pos = np.clip(lo_pos, 0, N - 1).astype(np.int64)
+    hi_pos = np.clip(hi_pos, 0, N - 1).astype(np.int64)
 
-    for i in range(len(rlos)):
-        rlo = int(rlos[i])
-        rhi = int(rhis[i])
-        delta = rhi - rlo
+    left_pos = np.minimum(lo_pos, hi_pos)
+    right_pos = np.maximum(lo_pos, hi_pos)
 
-        plo = rlo // C
-        phi = rhi // C
+    if conservative:
+        start_pos = np.maximum(0, left_pos - 2 * eps)
+        end_pos = np.minimum(N - 1, right_pos + 2 * eps)
+    else:
+        start_pos = left_pos
+        end_pos = right_pos
 
-        # --- feasible-set weights ---
-        # L(u)=max(-eps, u-delta), number of feasible v for each u: w(u)=eps-L(u)+1
-        L = np.maximum(-eps, u_vals - delta)
-        w = (eps - L + 1).astype(np.int64)
-        F = float(w.sum())  # |F_delta|
+    start_pages = (start_pos // ipp).astype(np.int64, copy=False)
+    end_pages = (end_pos // ipp).astype(np.int64, copy=False)
 
-        # --- core pages: always referenced with prob 1 ---
-        for p in range(int(plo), int(phi) + 1):
-            count[p] += 1.0
+    # difference array: interval add [start_page, end_page] += 1
+    diff = np.zeros(num_pages + 1, dtype=np.float64)
 
-        # --- compute S(u) pages (start page) for left boundary ---
-        # clamp start_pos >= 0 for robustness near beginning
-        start_pos = np.maximum(0, rlo + u_vals - eps)
-        Su = (start_pos // C).astype(np.int64)
+    np.add.at(diff, start_pages, 1.0)
 
-        # Left boundary pages range: from min_start_page to plo-1
-        min_start_pos = max(0, rlo - 2 * eps)
-        min_start_page = min_start_pos // C
+    end_next = end_pages + 1
+    valid = end_next <= num_pages
+    np.add.at(diff, end_next[valid], -1.0)
 
-        for p in range(int(min_start_page), int(plo)):
-            # prob = sum_{u: Su<=p} w(u) / F
-            prob = float(w[Su <= p].sum()) / F
-            if prob > 0:
-                count[p] += prob
+    page_counts = np.cumsum(diff[:-1])
 
-        # --- right boundary pages ---
-        # Rightmost possible end position: rhi + 2eps (clamp to N-1)
-        max_end_pos = min(N - 1, rhi + 2 * eps)
-        max_end_page = max_end_pos // C
+    total_refs = float(page_counts.sum())
+    if total_refs <= 0:
+        q = np.zeros_like(page_counts, dtype=np.float64)
+    else:
+        q = page_counts / total_refs
 
-        # For a page p>phi, need E(v) >= p.
-        # E(v)=floor((rhi+v+eps)/C) >= p  <=>  rhi+v+eps >= p*C  <=> v >= p*C-(rhi+eps)
-        for p in range(int(phi) + 1, int(max_end_page) + 1):
-            v0 = p * C - (rhi + eps)          # minimal v (may be < -eps)
-            Vp = max(-eps, v0)                # clamp to [-eps, ...]
-            if Vp > eps:
-                continue  # impossible to reach this page
+    return page_counts, total_refs, q
 
-            # for each u, feasible v lower bound is max(L(u), Vp)
-            lb = np.maximum(L, Vp)
-            cnt_v = np.maximum(0, eps - lb + 1)  # number of v satisfying both constraints
-            prob = float(cnt_v.sum()) / F
-            if prob > 0:
-                count[p] += prob
+def range_cost_function(
+    epsilon,
+    n,
+    seg_size,
+    M,
+    ipp,
+    ps,
+    query_file="",
+    data_file="",
+    policy="LRU",
+    conservative=True,
+):
+    """
+    Fast CAM estimator for range queries.
 
-    return count
+    Uses conservative interval estimator for page popularity:
+        [r(lo)-2eps, r(hi)+2eps]
 
-def range_cost_function(epsilon, n, seg_size, M, ipp, ps, 
-                        query_file="", data_file="",cache_policy="LRU"):
+    Cost:
+        estimated_IO = (1 - h) * avg_RDAC
+
+    where avg_RDAC is estimated from the same conservative page interval.
+    """
+    import math
+    import numpy as np
+
+    epsilon = int(epsilon)
+    ipp = int(ipp)
     M_index = n * seg_size / (2 * epsilon)
     M_buffer = M - M_index
-    C = M_buffer/ps
+    C = M_buffer / ps
+
+    if C <= 0:
+        h = 0.0
+    else:
+        h = None
+
     total_pages = math.ceil(n / ipp)
 
     data = np.fromfile(data_file, dtype=np.uint64)
+    data = data[1:]
+
     queries = np.fromfile(query_file, dtype=np.uint64).reshape(-1, 2)
-    lo_keys,hi_keys = queries[:,0],queries[:,1]
-    rlo = np.searchsorted(data, lo_keys, side='right') - 1
-    rhi = np.searchsorted(data, hi_keys, side='right') - 1
-    rlo = np.clip(rlo, 0, n - 1).astype(np.int64)
-    rhi = np.clip(rhi, 0, n - 1).astype(np.int64)
-    # keys = rhi - rlo
-    # RDAC = rhi/ipp - rlo/ipp + 1 + 2*epsilon/ipp
-    # old_RDAC = rhi/ipp - rlo/ipp + 1 + 2*epsilon/ipp
-    RDAC = get_RDAC(rlo,rhi,epsilon,ipp)
-    print("RDAC mean:", RDAC.mean(), "max:", RDAC.max())
-    # print("old RDAC mean:", old_RDAC.mean(), "max:", old_RDAC.max())
-    page_counts = estimate_page_counts_from_range_queryfile(rlo, rhi, epsilon, ipp, n)
-    total = sum(page_counts.values())
-    q = np.array([f / total for f in page_counts.values()], dtype=np.float64)
-    q = np.sort(q)[::-1]
-    
-    # bug here!!!!!
-    buffer_ratio = cache_hit_ratio(cache_policy, C, total_pages, q)
-    # print(buffer_ratio)
-    h = validate_ratio(buffer_ratio)
-    print((1-h)*RDAC.sum()/len(queries))
-    return (1-h)*RDAC.sum()/len(queries), h
+    keep = max(1, int(queries.shape[0] * LEARNING_QUERY_FRACTION))
+    queries = queries[:keep]
+    lo_keys, hi_keys = queries[:, 0], queries[:, 1]
+
+    page_counts, total_refs, q = estimate_page_counts_from_range_queryfile(
+        lo_keys=lo_keys,
+        hi_keys=hi_keys,
+        data=data,
+        epsilon=epsilon,
+        ipp=ipp,
+        conservative=conservative,
+    )
+
+    q_nonzero = q[q > 0]
+    q_nonzero = np.sort(q_nonzero)[::-1]
+
+    if h is None:
+        buffer_ratio = cache_hit_ratio(policy, C, q_nonzero, Q=total_refs)
+        h = validate_ratio(buffer_ratio)
+
+    avg_RDAC = total_refs / len(queries)
+
+    estimated_io = (1.0 - h) * avg_RDAC
+
+    print(f"eps={epsilon}, avg_RDAC={avg_RDAC:.6f}, h={h:.6f}, estimated_io={estimated_io:.6f}")
+
+    return estimated_io, h
     
 def cost_function(epsilon, n, seg_size, M, ipp, ps,
                   query_file="", data_file="", s="all_in_once", cache_policy="LRU",
@@ -869,7 +826,7 @@ def cost_function(epsilon, n, seg_size, M, ipp, ps,
         h = 0.0
     else:
         data = data_arr if data_arr is not None else np.fromfile(data_file,dtype=np.uint64)[1:]
-        page_counts, Tpos, Q_local = estimate_page_counts_from_queryfile(
+        page_counts, _ , Q_local = estimate_page_counts_from_queryfile(
             query_file, data, epsilon, ipp, H=H, Q=Q
         )
         total_page_requests = page_counts.sum()
@@ -877,29 +834,29 @@ def cost_function(epsilon, n, seg_size, M, ipp, ps,
             h = 0.0
         else:
             q = page_counts / total_page_requests
-            h = cache_hit_ratio(cache_policy, int(C), q, Q_local)
+            h = shared_cache_hit_ratio(cache_policy, int(C), q, Q_local)
         # q = page_counts / total_page_requests
         # q = np.sort(q)[::-1]
         # buffer_ratio = sample_ratio(C, total_pages, q, Q)
         
         
-        h = validate_ratio(h)
+        h = shared_validate_ratio(h)
     return (1 - h) * expected_DAC(epsilon, ipp, s), h
 
 def getExpectedRangeCostPerEpsilon(ipp, seg_size, M, n, ps,
-                                   data_file="",query_file="",cache_policy="LRU"):
+                                   data_file="",query_file="",cache_policy="LRU",
+                                   log_path=""):
     data = f"{DATASETS_DIRECTORY}{data_file}"
     query = f"{DATASETS_DIRECTORY}{query_file}"
     eps_list = []
     cost_list = []
     h_list = []
     time_list = []
-    least_eps = math.ceil(n*seg_size/(2*M))
-    r = range(least_eps, 65, 2)
-    # r = range(8,17)
-    for eps in r:
+    least_eps = math.ceil(n*seg_size/(2*M)) if BUDGET_MODE != "RAW" else 2
+    for eps in range(least_eps if (least_eps%2==0) else least_eps+1, 129, 2):     
         t1 = time.time()
-        cost,h = range_cost_function(eps, n, seg_size, M, ipp, ps, query, data, cache_policy)
+        cost,h = range_cost_function(eps, n, seg_size, M, ipp, ps, query, data,
+                                     cache_policy)
         eps_list.append(eps)
         cost_list.append(cost)
         h_list.append(h)
@@ -910,26 +867,36 @@ def getExpectedRangeCostPerEpsilon(ipp, seg_size, M, n, ps,
     print("cost:",cost_list)
     print("ratio:",h_list)
     
-    print("group avg time:", sum(time_list)/len(time_list))
+    # print("group avg time:", sum(time_list)/len(time_list))s
     
-    log_filename = f"{query_file}.log".replace(".bin","")
-    with open(LOG_DIRECTORY+log_filename,'a') as f:
-        f.write("M,epsilon,cost,ratio\n")
+
+    log_filename = f"{query_file}_{cache_policy}.log".replace(".range.bin","")
+    log_path = log_path or LOG_DIRECTORY+log_filename
+    with open(log_path,'a+') as f:
+        f.seek(0)         
+        content = f.read()
+
+        if not content:
+            f.write("M,epsilon,cost,ratio,time\n")
+            
         for i in range(len(cost_list)):
-            f.write(f"{M>>20},{eps_list[i]},{cost_list[i]},{h_list[i]}\n")
+            f.write(f"{M>>20},{eps_list[i]},{cost_list[i]},{h_list[i]},{time_list[i]}\n")
+        
     return eps_list, cost_list
 
 def getExpectedCostPerEpsilon(ipp, seg_size, M, n, ps,
-                              data_file="",query_file="",s="all_in_once",cache_policy="LRU",log_path=""):
+                              data_file="",query_file="",s="all_in_once",
+                              cache_policy="LRU",log_path=""):
     data = f"{DATASETS_DIRECTORY}{data_file}"
     query = f"{DATASETS_DIRECTORY}{query_file}"
     data_arr = np.fromfile(data, dtype=np.uint64)[1:]
-    H, Q = prepare_query_histogram(query, data_arr)
+    # H, Q = prepare_query_histogram(query, data_arr)
+    H, Q = prepare_query_position_cache(query, data_arr)
     eps_list = []
     cost_list = []
     h_list = []
     time_list = []
-    least_eps = math.ceil(n*seg_size/(2*M))
+    least_eps = math.ceil(n*seg_size/(2*M)) if BUDGET_MODE != "RAW" else 2
     for eps in range(least_eps if (least_eps%2==0) else least_eps+1, 129, 2):     
         t1 = time.time()
         cost,h = cost_function(
@@ -986,26 +953,30 @@ def getExpectedCostPerEpsilon(ipp, seg_size, M, n, ps,
     
 
 def main():
-    for m in [10]:
-        M = m*1024*1024
-        data_file = f"books_10M_uint64_unique"
-        query_file = f"books_10M_uint64_unique.query.bin"
-        for s in ["LRU","LFU","FIFO"]:
-            eps_list,cost_list = getExpectedCostPerEpsilon(ipp=512,seg_size=16,M=M,n=int(1e7),ps=4096,
-                                            data_file=data_file,query_file=query_file,s="all_in_once",
-                                            cache_policy=s,log_path=f"{LOG_DIRECTORY}cmp/books_10M_M{M>>20}_summary_{s}.log")
+    # for m in [5,10,15,20,25,30,35,40,45,50,55,60]:
+    #     M = m*1024*1024
+    #     data_file = f"books_10M_uint64_unique"
+    #     query_file = f"books_10M_uint64_unique.query.bin"
+        
+    #     # log_path = ""
+    #     for s in ["LRU","LFU","FIFO"]:
+    #         # log_path = f"{LOG_DIRECTORY}cmp/books_10M_M{M>>20}_query_summary_{s}.log"
+    #         eps_list,cost_list = getExpectedCostPerEpsilon(ipp=512,seg_size=16,M=M,n=int(1e7),ps=4096,
+    #                                         data_file=data_file,query_file=query_file,s="all_in_once",
+    #                                         cache_policy=s)
     
     # data_file = f"fb_100M_uint64_unique"
     # query_file = f"fb_100M_uint64_unique.4Mrange.bin"
-    # data_file = f"books_20M_uint64_unique"
-    # query_file = f"books_20M_uint64_unique.range.bin"
-    # getExpectedRangeCostPerEpsilon(n=int(1e8),seg_size=16,M=M,ipp=512,ps=4096,
-    #                                query_file=query_file,data_file=data_file,fraction=0.3)
+    for m in [5,10,15,20,25,30,35,40,45,50,55,60]:
+        M = m*1024*1024
+        data_file = f"fb_10M_uint64_unique"
+        query_file = f"fb_10M_uint64_unique.range.bin"
+        
+        for s in ["LRU","LFU","FIFO"]:
+            getExpectedRangeCostPerEpsilon(n=int(1e7),seg_size=16,M=M,ipp=512,ps=4096,
+                                    query_file=query_file,data_file=data_file,
+                                    cache_policy=s)
     
-    # data_file = f"books_200M_uint64_unique"
-    # query_file = f"books_200M_uint64_unique.4Mtable2.bin"
-    # getExpectedJoinCostPerEpsilon(ipp=512,seg_size=16,M=M,n=int(2e7),ps=4096,data_file=data_file,query_file=query_file,
-    #                                )
     
 if __name__ == "__main__":
     main()

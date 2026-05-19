@@ -398,4 +398,4 @@ def run_fb10m_reciprocal_linear_calibration_and_revision():
         ratio_field="residual",
     )
 if __name__ == "__main__":
-    run_fb10m_reciprocal_linear_calibration_and_revision()
+    run_books10m_reciprocal_linear_calibration_and_revision()

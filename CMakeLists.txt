@@ -32,6 +32,10 @@ add_executable(pgm_bench
     exp/pgm_bench.cpp
 )
 
+add_executable(pgm_range_bench
+    exp/pgm_range_bench.cpp
+)
+
 add_executable(pgm_cam_covariance
     exp/pgm_cam_covariance.cpp
 )
@@ -44,7 +48,36 @@ add_executable(pgm_cache_simulate
     exp/pgm_cache_simulate.cpp
 )
 
+add_executable(pgm_range_cache_simulate
+    exp/pgm_range_cache_simulate.cpp
+)
+
+add_executable(rmi_bench
+    exp/rmi_bench.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_64.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_128.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_256.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_512.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1024.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2048.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_4096.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_8192.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_16384.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_32768.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_65536.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_131072.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_262144.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_524288.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1048576.cpp
+    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2097152.cpp
+)
+
 target_include_directories(pgm_bench
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_include_directories(pgm_range_bench
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
@@ -64,7 +97,23 @@ target_include_directories(pgm_cache_simulate
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_include_directories(pgm_range_cache_simulate
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_include_directories(rmi_bench
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/rmi/rmi_eval/generated
+)
+
 target_link_libraries(pgm_bench
+    PRIVATE
+        cam_cache
+)
+
+target_link_libraries(pgm_range_bench
     PRIVATE
         cam_cache
 )
@@ -84,8 +133,21 @@ target_link_libraries(pgm_cache_simulate
         cam_cache
 )
 
+target_link_libraries(pgm_range_cache_simulate
+    PRIVATE
+        cam_cache
+)
+
+target_link_libraries(rmi_bench
+    PRIVATE
+        cam_cache
+)
+
 if(CAM_ENABLE_WARNINGS)
     target_compile_options(pgm_bench PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(pgm_range_bench PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
     )
     target_compile_options(pgm_cam_covariance PRIVATE
@@ -95,6 +157,12 @@ if(CAM_ENABLE_WARNINGS)
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
     )
     target_compile_options(pgm_cache_simulate PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(pgm_range_cache_simulate PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(rmi_bench PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
     )
 endif()

@@ -220,7 +220,7 @@ Config parse_args(int argc, char** argv) {
         } else if (arg == "--policies") {
             cfg.policies = cam::cache::parse_policy_list(require_value("--policies"));
         } else if (arg == "--strategies") {
-            cfg.strategies = cam::pgm_query::parse_search_strategy_list(require_value("--strategies"));
+            cfg.strategies = cam::point_query::parse_search_strategy_list(require_value("--strategies"));
         } else if (arg == "--budget-mode") {
             cfg.budget_mode = parse_budget_mode(require_value("--budget-mode"));
         } else if (arg == "--summary-out") {
@@ -270,7 +270,7 @@ void write_summary_row(std::ostream& out, const SummaryRow& row) {
     out << std::fixed << std::setprecision(10)
         << row.epsilon << ','
         << cam::cache::policy_name(row.policy) << ','
-        << cam::pgm_query::search_strategy_name(row.strategy) << ','
+        << cam::point_query::search_strategy_name(row.strategy) << ','
         << budget_mode_name(row.budget_mode) << ','
         << row.memory_budget_bytes << ','
         << row.cache_bytes << ','

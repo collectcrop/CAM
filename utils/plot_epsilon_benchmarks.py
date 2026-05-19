@@ -3,14 +3,23 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Iterable
 
+TMP_MPLCONFIGDIR = Path("/tmp/matplotlib")
+TMP_XDG_CACHE_HOME = Path("/tmp/xdg-cache")
+TMP_MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
+TMP_XDG_CACHE_HOME.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(TMP_MPLCONFIGDIR))
+os.environ.setdefault("XDG_CACHE_HOME", str(TMP_XDG_CACHE_HOME))
+
 try:
     import matplotlib.pyplot as plt
     from matplotlib.ticker import PercentFormatter, ScalarFormatter
+    import numpy as np
     import pandas as pd
 except ImportError as exc:  # pragma: no cover - runtime environment guard
     raise SystemExit(
@@ -27,21 +36,25 @@ plt.rcParams.update({
             })
 # global fonts
 TITLE_FONTSIZE = 25     
-XLABEL_FONTSIZE = 20    
-YLABEL_FONTSIZE = 20    
-TICK_FONTSIZE   = 15    
+XLABEL_FONTSIZE = 25    
+YLABEL_FONTSIZE = 25    
+TICK_FONTSIZE   = 20    
 TICK_FONT = {"labelsize": TICK_FONTSIZE}
+MARKER_SIZE_PRIMARY = 8
+MARKER_SIZE_SECONDARY = 7
+MARKER_SIZE_ERROR = 9
+MIN_PLOTTED_EPSILON = 8
 
 
 ESTIMATE_REQUIRED_COLUMNS = {"m", "epsilon", "cost", "ratio"}
 BENCH_REQUIRED_COLUMNS = {
     "epsilon",
     "policy",
-    "queries",
     "hit_ratio",
     "logical_ios",
     "throughput_qps",
 }
+BENCH_QUERY_COUNT_COLUMNS = ("queries", "ranges")
 MERGE_KEYS = ["dataset_key", "M", "epsilon", "policy"]
 PREFERRED_POLICIES = ["FIFO", "LRU", "LFU", "NONE"]
 COLOR_MAP = {
@@ -51,6 +64,25 @@ COLOR_MAP = {
     "NONE": "tab:gray",
 }
 DEFAULT_OUTPUT_DIR = Path("data/outputs/figures/epsilon_analysis")
+DEFAULT_FITCAM_ROOT = Path("build/log/fitcam_q30")
+FITCAM_REQUIRED_COLUMNS = {
+    "policy",
+    "epsilon",
+    "actual_avg_ios",
+    "m",
+    "estimated_cost",
+    "corrected_cost",
+}
+REVISION_LOG_REQUIRED_COLUMNS = {"m", "epsilon", "cost", "ratio"}
+REAL_FITCAM_REQUIRED_COLUMNS = {"epsilon", "avg_ios"}
+REAL_SUMMARY_REQUIRED_COLUMNS = {"epsilon", "policy", "queries"}
+FITCAM_CURVE_COLOR_MAP = {
+    "real": "black",
+    "estimate": "blue",
+    "calibrated": "red",
+    "error_before": "blue",
+    "error_after": "red",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,6 +134,27 @@ def parse_args() -> argparse.Namespace:
         "--output-prefix",
         default=None,
         help="Optional prefix for output artifact filenames.",
+    )
+    parser.add_argument(
+        "--fitcam-root",
+        type=Path,
+        default=DEFAULT_FITCAM_ROOT,
+        help="Root directory used to discover q30 fitCAM outputs. Default: build/log/fitcam_q30",
+    )
+    parser.add_argument(
+        "--revision-log-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory used to discover revised estimate logs named "
+            "${DATA_FILE}_${POLICY}_revision.log. "
+            "Default: parent directory of --fitcam-root, e.g., build/log."
+        ),
+    )
+    parser.add_argument(
+        "--skip-fitcam",
+        action="store_true",
+        help="Skip auto-discovery and plotting of q30 fitCAM corrected-vs-real figures.",
     )
     return parser.parse_args()
 
@@ -162,7 +215,11 @@ def infer_dataset_from_estimate_log(path: Path) -> str:
 
 
 def infer_dataset_and_m_from_bench(path: Path) -> tuple[str, int | None]:
-    match = re.match(r"(?P<dataset>.+)_M(?P<m>\d+)_bench\.csv$", path.name, flags=re.IGNORECASE)
+    match = re.match(
+        r"(?P<dataset>.+)_M(?P<m>\d+)(?:_range)?_bench(?:_[^.]+)?\.csv$",
+        path.name,
+        flags=re.IGNORECASE,
+    )
     if match is None:
         return normalize_dataset_key(path.stem), None
     return normalize_dataset_key(match.group("dataset")), int(match.group("m"))
@@ -223,6 +280,13 @@ def load_bench_csvs(paths: Iterable[Path]) -> pd.DataFrame:
         df.columns = [normalized_header(column) for column in df.columns]
         if not BENCH_REQUIRED_COLUMNS.issubset(df.columns):
             raise ValueError(f"Unexpected benchmark CSV format: {path}")
+        query_count_column = next((column for column in BENCH_QUERY_COUNT_COLUMNS if column in df.columns), None)
+        if query_count_column is None:
+            raise ValueError(
+                f"Unexpected benchmark CSV format: {path}; expected one of "
+                f"{', '.join(BENCH_QUERY_COUNT_COLUMNS)}"
+            )
+        workload_type = "range" if query_count_column == "ranges" else "point"
 
         dataset_key, inferred_m = infer_dataset_and_m_from_bench(path)
         if "m" not in df.columns:
@@ -232,7 +296,7 @@ def load_bench_csvs(paths: Iterable[Path]) -> pd.DataFrame:
 
         df["m"] = pd.to_numeric(df["m"], errors="coerce")
         df["epsilon"] = pd.to_numeric(df["epsilon"], errors="coerce")
-        df["queries"] = pd.to_numeric(df["queries"], errors="coerce")
+        df["queries"] = pd.to_numeric(df[query_count_column], errors="coerce")
         df["hit_ratio"] = pd.to_numeric(df["hit_ratio"], errors="coerce")
         df["logical_ios"] = pd.to_numeric(df["logical_ios"], errors="coerce")
         df["throughput_qps"] = pd.to_numeric(df["throughput_qps"], errors="coerce")
@@ -246,6 +310,7 @@ def load_bench_csvs(paths: Iterable[Path]) -> pd.DataFrame:
         df["epsilon"] = df["epsilon"].astype(int)
         df["policy"] = df["policy"].astype(str).str.upper()
         df["dataset_key"] = dataset_key
+        df["workload_type"] = workload_type
         df["bench_source"] = str(path)
         if "avg_logical_ios" not in df.columns:
             df["avg_logical_ios"] = df["logical_ios"] / df["queries"]
@@ -262,6 +327,7 @@ def load_bench_csvs(paths: Iterable[Path]) -> pd.DataFrame:
                     "avg_logical_ios",
                     "hit_ratio",
                     "throughput_qps",
+                    "workload_type",
                     "bench_source",
                 ]
             ].rename(
@@ -336,14 +402,40 @@ def merge_frames(estimates: pd.DataFrame, benches: pd.DataFrame) -> pd.DataFrame
     merged = pd.merge(
         estimates,
         benches,
-        how="inner",
+        how="outer",
         on=MERGE_KEYS,
         validate="one_to_one",
     )
     if merged.empty:
+        print_merge_diagnostics(estimates, benches, merged)
         raise ValueError(
             "Estimate logs and benchmark CSVs did not overlap on dataset_key, M, epsilon, and policy."
         )
+
+    query_counts = (
+        benches.dropna(subset=["queries"])
+        .groupby(["dataset_key", "M", "policy"], as_index=False)
+        .agg(reference_queries=("queries", "first"))
+    )
+    merged = merged.merge(query_counts, how="left", on=["dataset_key", "M", "policy"])
+    merged["queries"] = merged["queries"].fillna(merged["reference_queries"])
+    merged = merged.drop(columns=["reference_queries"])
+    merged = merged.dropna(subset=["queries"]).copy()
+    if merged.empty:
+        print_merge_diagnostics(estimates, benches, merged)
+        raise ValueError(
+            "Benchmark CSVs did not provide query/range counts for any estimate rows after filtering."
+        )
+
+    workload_types = (
+        benches.dropna(subset=["workload_type"])
+        .groupby(["dataset_key", "M", "policy"], as_index=False)
+        .agg(reference_workload_type=("workload_type", "first"))
+    )
+    merged = merged.merge(workload_types, how="left", on=["dataset_key", "M", "policy"])
+    merged["workload_type"] = merged["workload_type"].fillna(merged["reference_workload_type"])
+    merged["workload_type"] = merged["workload_type"].fillna("estimate_only")
+    merged = merged.drop(columns=["reference_workload_type"])
 
     merged["estimated_total_logical_ios"] = merged["estimated_avg_logical_ios"] * merged["queries"]
     merged["logical_io_error"] = merged["actual_total_logical_ios"] - merged["estimated_total_logical_ios"]
@@ -430,7 +522,21 @@ def apply_outer_right_ylabel(axis_right, idx: int, ncols: int, ylabel: str) -> N
     axis_right.set_ylabel(ylabel if col == ncols - 1 else "", fontsize=YLABEL_FONTSIZE)
 
 
-def save_legend_figure(handles: list, labels: list[str], output_path: Path, ncol: int = 4) -> None:
+def filter_min_epsilon(df: pd.DataFrame) -> pd.DataFrame:
+    if "epsilon" not in df.columns:
+        return df
+    return df[df["epsilon"] >= MIN_PLOTTED_EPSILON].copy()
+
+
+def series_rows(df: pd.DataFrame, value_column: str) -> pd.DataFrame:
+    return (
+        df.dropna(subset=["epsilon", value_column])
+        .sort_values("epsilon")
+        .copy()
+    )
+
+
+def save_legend_figure(handles: list, labels: list[str], output_path: Path, ncol: int = 3) -> None:
     if not handles or not labels:
         return
     fig = plt.figure(figsize=(min(14.0, max(6.0, 1.2 * len(labels))), 1.2))
@@ -446,7 +552,510 @@ def save_legend_figure(handles: list, labels: list[str], output_path: Path, ncol
     save_figure(fig, output_path)
 
 
+def infer_policy_from_fitcam_curve_csv(path: Path) -> str | None:
+    match = re.match(
+        r"(?P<dataset>.+)_(?P<policy>FIFO|LRU|LFU|NONE)_q30_fitcam_corrected_vs_real\.csv$",
+        path.name,
+        flags=re.IGNORECASE,
+    )
+    return match.group("policy").upper() if match else None
+
+
+def load_real_fitcam_rows(real_dir: Path, dataset_key: str, policy: str) -> pd.DataFrame:
+    if not real_dir.exists() or not real_dir.is_dir():
+        return pd.DataFrame(columns=["policy", "M", "epsilon", "actual_avg_ios", "real_fitcam_source"])
+
+    pattern = re.compile(
+        rf"^{re.escape(dataset_key)}_M(?P<m>\d+)_{policy.lower()}_fitcam_real\.csv$",
+        flags=re.IGNORECASE,
+    )
+    frames: list[pd.DataFrame] = []
+    for path in sorted(real_dir.glob("*.csv")):
+        match = pattern.match(path.name)
+        if match is None:
+            continue
+        df = pd.read_csv(path)
+        df.columns = [normalized_header(column) for column in df.columns]
+        if not REAL_FITCAM_REQUIRED_COLUMNS.issubset(df.columns):
+            raise ValueError(f"Unexpected real_fitcam CSV format: {path}")
+        df["epsilon"] = pd.to_numeric(df["epsilon"], errors="coerce")
+        df["avg_ios"] = pd.to_numeric(df["avg_ios"], errors="coerce")
+        df = df.dropna(subset=["epsilon", "avg_ios"]).copy()
+        df["epsilon"] = df["epsilon"].astype(int)
+        df["M"] = int(match.group("m"))
+        df["policy"] = policy.upper()
+        df["real_fitcam_source"] = str(path.resolve())
+        frames.append(
+            df[
+                [
+                    "policy",
+                    "M",
+                    "epsilon",
+                    "avg_ios",
+                    "real_fitcam_source",
+                ]
+            ].rename(columns={"avg_ios": "actual_avg_ios"})
+        )
+
+    if not frames:
+        return pd.DataFrame(columns=["policy", "M", "epsilon", "actual_avg_ios", "real_fitcam_source"])
+    return pd.concat(frames, ignore_index=True)
+
+
+def load_fitcam_query_counts(summary_dir: Path, dataset_key: str, policy: str) -> pd.DataFrame:
+    if not summary_dir.exists() or not summary_dir.is_dir():
+        return pd.DataFrame(columns=["policy", "M", "epsilon", "queries", "fitcam_summary_source"])
+
+    pattern = re.compile(
+        rf"^{re.escape(dataset_key)}_M(?P<m>\d+)_q30_summary\.csv$",
+        flags=re.IGNORECASE,
+    )
+    frames: list[pd.DataFrame] = []
+    for path in sorted(summary_dir.glob("*.csv")):
+        match = pattern.match(path.name)
+        if match is None:
+            continue
+        df = pd.read_csv(path)
+        df.columns = [normalized_header(column) for column in df.columns]
+        if not REAL_SUMMARY_REQUIRED_COLUMNS.issubset(df.columns):
+            raise ValueError(f"Unexpected fitcam real_summary CSV format: {path}")
+        df["policy"] = df["policy"].astype(str).str.upper()
+        df = df[df["policy"] == policy.upper()].copy()
+        df["epsilon"] = pd.to_numeric(df["epsilon"], errors="coerce")
+        df["queries"] = pd.to_numeric(df["queries"], errors="coerce")
+        df = df.dropna(subset=["epsilon", "queries"]).copy()
+        df["epsilon"] = df["epsilon"].astype(int)
+        df["queries"] = df["queries"].astype(int)
+        df["M"] = int(match.group("m"))
+        df["fitcam_summary_source"] = str(path.resolve())
+        frames.append(df[["policy", "M", "epsilon", "queries", "fitcam_summary_source"]])
+
+    if not frames:
+        return pd.DataFrame(columns=["policy", "M", "epsilon", "queries", "fitcam_summary_source"])
+    return pd.concat(frames, ignore_index=True)
+
+
+def choose_real_fitcam_dir(fitcam_dir: Path, corrected_csv: Path, policy: str) -> Path | None:
+    candidates = [
+        corrected_csv.parent / "real_fitcam",
+        fitcam_dir / policy / "real_fitcam",
+        fitcam_dir / "real_fitcam",
+    ]
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+    return None
+
+
+def load_fitcam_curve_frame(
+    corrected_csv: Path,
+    fitcam_dir: Path,
+    dataset_key: str,
+    policy: str,
+    full_reference_df: pd.DataFrame,
+    allowed_m_values: set[int] | None,
+) -> pd.DataFrame:
+    df = pd.read_csv(corrected_csv)
+    df.columns = [normalized_header(column) for column in df.columns]
+    if not FITCAM_REQUIRED_COLUMNS.issubset(df.columns):
+        raise ValueError(f"Unexpected fitCAM corrected-vs-real CSV format: {corrected_csv}")
+
+    df["policy"] = df["policy"].astype(str).str.upper()
+    df = df[df["policy"] == policy.upper()].copy()
+    df["epsilon"] = pd.to_numeric(df["epsilon"], errors="coerce")
+    df["m"] = pd.to_numeric(df["m"], errors="coerce")
+    df["actual_avg_ios"] = pd.to_numeric(df["actual_avg_ios"], errors="coerce")
+    df["estimated_cost"] = pd.to_numeric(df["estimated_cost"], errors="coerce")
+    df["corrected_cost"] = pd.to_numeric(df["corrected_cost"], errors="coerce")
+    df = df.dropna(subset=["epsilon", "m", "actual_avg_ios", "estimated_cost", "corrected_cost"]).copy()
+    df["epsilon"] = df["epsilon"].astype(int)
+    df["M"] = df["m"].astype(int)
+    if allowed_m_values is not None:
+        df = df[df["M"].isin(allowed_m_values)].copy()
+    if df.empty:
+        return df
+    df["fitcam_source"] = str(corrected_csv.resolve())
+    df["dataset_key"] = dataset_key
+
+    real_fitcam_dir = choose_real_fitcam_dir(fitcam_dir, corrected_csv, policy)
+    if real_fitcam_dir is not None:
+        real_df = load_real_fitcam_rows(real_fitcam_dir, dataset_key, policy)
+        if not real_df.empty:
+            df = df.merge(
+                real_df,
+                how="left",
+                on=["policy", "M", "epsilon"],
+                suffixes=("", "_from_real_fitcam"),
+            )
+            df["actual_avg_ios"] = df["actual_avg_ios_from_real_fitcam"].fillna(df["actual_avg_ios"])
+            df = df.drop(columns=["actual_avg_ios_from_real_fitcam"])
+        else:
+            df["real_fitcam_source"] = ""
+    else:
+        df["real_fitcam_source"] = ""
+
+    reference_df = full_reference_df.copy()
+    reference_df["policy"] = reference_df["policy"].astype(str).str.upper()
+    reference_df["M"] = pd.to_numeric(reference_df["M"], errors="coerce").astype(int)
+    reference_df["epsilon"] = pd.to_numeric(reference_df["epsilon"], errors="coerce").astype(int)
+    reference_df["queries"] = pd.to_numeric(reference_df["queries"], errors="coerce")
+    reference_df["actual_total_logical_ios"] = pd.to_numeric(
+        reference_df["actual_total_logical_ios"], errors="coerce"
+    )
+    reference_df = reference_df.dropna(subset=["queries", "actual_total_logical_ios"]).copy()
+    reference_df = reference_df.rename(columns={"queries": "full_queries"})
+
+    df = df.merge(
+        reference_df[["policy", "M", "epsilon", "full_queries", "actual_total_logical_ios"]],
+        how="left",
+        on=["policy", "M", "epsilon"],
+    )
+    if df["full_queries"].isna().any() or df["actual_total_logical_ios"].isna().any():
+        missing = (
+            df[df["full_queries"].isna() | df["actual_total_logical_ios"].isna()][["policy", "M", "epsilon"]]
+            .drop_duplicates()
+            .to_dict("records")
+        )
+        raise ValueError(f"Missing full-workload benchmark reference for fitCAM rows: {missing[:5]}")
+
+    df["actual_total_ios"] = df["actual_total_logical_ios"]
+    df["estimated_total_ios"] = df["estimated_cost"] * df["full_queries"]
+    df["corrected_total_ios"] = df["corrected_cost"] * df["full_queries"]
+    df["error_before"] = df["estimated_total_ios"] - df["actual_total_ios"]
+    df["error_after"] = df["corrected_total_ios"] - df["actual_total_ios"]
+    return df.sort_values(["M", "epsilon"]).reset_index(drop=True)
+
+
+def discover_fitcam_curve_sources(
+    fitcam_dir: Path,
+    dataset_key: str,
+    policies: set[str] | None,
+) -> dict[str, Path]:
+    if not fitcam_dir.exists() or not fitcam_dir.is_dir():
+        return {}
+
+    selected: dict[str, tuple[int, Path]] = {}
+    for path in sorted(fitcam_dir.glob("**/*_q30_fitcam_corrected_vs_real.csv")):
+        policy = infer_policy_from_fitcam_curve_csv(path)
+        if policy is None:
+            continue
+        if policies is not None and policy not in policies:
+            continue
+        score = 1 if path.parent.name.upper() == policy else 0
+        previous = selected.get(policy)
+        if previous is None or score > previous[0]:
+            selected[policy] = (score, path.resolve())
+    return {policy: item[1] for policy, item in selected.items()}
+
+
+
+
+def infer_policy_from_revision_log(path: Path) -> str | None:
+    match = re.match(
+        r"(?P<dataset>.+)_(?P<policy>FIFO|LRU|LFU|NONE)_revision\.log$",
+        path.name,
+        flags=re.IGNORECASE,
+    )
+    return match.group("policy").upper() if match else None
+
+
+def infer_dataset_from_revision_log(path: Path) -> str | None:
+    match = re.match(
+        r"(?P<dataset>.+)_(?P<policy>FIFO|LRU|LFU|NONE)_revision\.log$",
+        path.name,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    return normalize_dataset_key(match.group("dataset"))
+
+
+def discover_revision_log_sources(
+    revision_dir: Path,
+    dataset_key: str,
+    policies: set[str] | None,
+) -> dict[str, Path]:
+    """Discover build/log/${DATA_FILE}_${POLICY}_revision.log files."""
+    if not revision_dir.exists() or not revision_dir.is_dir():
+        return {}
+
+    selected: dict[str, tuple[int, Path]] = {}
+    for path in sorted(revision_dir.rglob("*_revision.log")):
+        policy = infer_policy_from_revision_log(path)
+        path_dataset_key = infer_dataset_from_revision_log(path)
+        if policy is None or path_dataset_key is None:
+            continue
+        if policies is not None and policy not in policies:
+            continue
+        if path_dataset_key != dataset_key:
+            continue
+        score = 1 if path.parent.resolve() == revision_dir.resolve() else 0
+        previous = selected.get(policy)
+        if previous is None or score > previous[0]:
+            selected[policy] = (score, path.resolve())
+    return {policy: item[1] for policy, item in selected.items()}
+
+
+def load_cost_log(path: Path, *, cost_name: str, ratio_name: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.columns = [normalized_header(column) for column in df.columns]
+    if not REVISION_LOG_REQUIRED_COLUMNS.issubset(df.columns):
+        raise ValueError(f"Unexpected estimate/revision log format: {path}")
+    df = df.rename(columns={"m": "M", "cost": cost_name, "ratio": ratio_name})
+    df["M"] = pd.to_numeric(df["M"], errors="coerce")
+    df["epsilon"] = pd.to_numeric(df["epsilon"], errors="coerce")
+    df[cost_name] = pd.to_numeric(df[cost_name], errors="coerce")
+    df[ratio_name] = pd.to_numeric(df[ratio_name], errors="coerce")
+    df = df.dropna(subset=["M", "epsilon", cost_name, ratio_name]).copy()
+    df["M"] = df["M"].astype(int)
+    df["epsilon"] = df["epsilon"].astype(int)
+    return df[["M", "epsilon", cost_name, ratio_name]]
+
+
+def original_log_for_revision(revision_log: Path) -> Path:
+    return revision_log.with_name(revision_log.name.replace("_revision.log", ".log"))
+
+
+def load_revision_curve_frame(
+    revision_log: Path,
+    dataset_key: str,
+    policy: str,
+    full_reference_df: pd.DataFrame,
+    allowed_m_values: set[int] | None,
+) -> pd.DataFrame:
+    """Build calibrated-vs-real metrics from a revised full estimate log.
+
+    The revised log stores corrected per-query cost in `cost`.  The original
+    estimate log is read from the same directory by replacing `_revision.log`
+    with `.log`. If it is absent, `cost - ratio` is used as a fallback because
+    fitCAM writes the predicted residual into `ratio`.
+    """
+    rev_df = load_cost_log(revision_log, cost_name="corrected_cost", ratio_name="predicted_residual")
+    original_log = original_log_for_revision(revision_log)
+    if original_log.exists():
+        est_df = load_cost_log(original_log, cost_name="estimated_cost", ratio_name="estimated_hit_ratio")
+        df = rev_df.merge(est_df[["M", "epsilon", "estimated_cost", "estimated_hit_ratio"]], on=["M", "epsilon"], how="inner")
+        if df.empty:
+            raise ValueError(f"Revision log and original estimate log do not overlap: {revision_log}, {original_log}")
+        df["estimate_source"] = str(original_log.resolve())
+    else:
+        df = rev_df.copy()
+        df["estimated_cost"] = df["corrected_cost"] - df["predicted_residual"]
+        df["estimated_hit_ratio"] = np.nan
+        df["estimate_source"] = ""
+        print(
+            f"[fitCAM] original estimate log not found for {revision_log}; "
+            "using corrected_cost - predicted_residual as estimated_cost.",
+            file=sys.stderr,
+        )
+
+    df["policy"] = policy.upper()
+    df["dataset_key"] = dataset_key
+    df["fitcam_source"] = str(revision_log.resolve())
+    if allowed_m_values is not None:
+        df = df[df["M"].isin(allowed_m_values)].copy()
+    if df.empty:
+        return df
+
+    reference_df = full_reference_df.copy()
+    reference_df["policy"] = reference_df["policy"].astype(str).str.upper()
+    reference_df["M"] = pd.to_numeric(reference_df["M"], errors="coerce").astype(int)
+    reference_df["epsilon"] = pd.to_numeric(reference_df["epsilon"], errors="coerce").astype(int)
+    reference_df["queries"] = pd.to_numeric(reference_df["queries"], errors="coerce")
+    reference_df["actual_total_logical_ios"] = pd.to_numeric(reference_df["actual_total_logical_ios"], errors="coerce")
+    query_df = (
+        reference_df.dropna(subset=["queries"])
+        .groupby(["policy", "M"], as_index=False)
+        .agg(full_queries=("queries", "first"))
+    )
+    actual_df = reference_df.dropna(subset=["actual_total_logical_ios"]).copy()
+
+    df = df.merge(
+        actual_df[["policy", "M", "epsilon", "actual_total_logical_ios"]],
+        how="outer",
+        on=["policy", "M", "epsilon"],
+    )
+    df = df.merge(query_df, how="left", on=["policy", "M"])
+    df = df.dropna(subset=["full_queries"]).copy()
+    if df.empty:
+        raise ValueError(f"Revision log has no workload query counts in benchmark rows: {revision_log}")
+    df["dataset_key"] = df["dataset_key"].fillna(dataset_key)
+    df["policy"] = df["policy"].fillna(policy.upper())
+    df["fitcam_source"] = df["fitcam_source"].fillna(str(revision_log.resolve()))
+
+    df["actual_total_ios"] = df["actual_total_logical_ios"]
+    df["estimated_total_ios"] = df["estimated_cost"] * df["full_queries"]
+    df["corrected_total_ios"] = df["corrected_cost"] * df["full_queries"]
+    df["error_before"] = df["estimated_total_ios"] - df["actual_total_ios"]
+    df["error_after"] = df["corrected_total_ios"] - df["actual_total_ios"]
+    return df.sort_values(["M", "epsilon"]).reset_index(drop=True)
+
+def plot_fitcam_policy_curves(
+    policy_df: pd.DataFrame,
+    output_path: Path,
+    legend_output_path: Path,
+) -> None:
+    policy_df = filter_min_epsilon(policy_df)
+    m_values = sorted(policy_df["M"].unique().tolist())
+    fig, axes, nrows, ncols = make_axes(m_values)
+    legend_map: dict[str, object] = {}
+
+    for idx, (axis, m_value) in enumerate(zip(axes, m_values)):
+        axis_right = axis.twinx()
+        part = filter_min_epsilon(policy_df[policy_df["M"] == m_value]).sort_values("epsilon")
+        if part.empty:
+            continue
+
+        real_part = series_rows(part, "actual_total_ios")
+        estimate_part = series_rows(part, "estimated_total_ios")
+        calibrated_part = series_rows(part, "corrected_total_ios")
+        err_before_part = series_rows(part, "error_before")
+        err_after_part = series_rows(part, "error_after")
+
+        if not real_part.empty:
+            real_line, = axis.plot(
+                real_part["epsilon"],
+                real_part["actual_total_ios"],
+                color=FITCAM_CURVE_COLOR_MAP["real"],
+                marker="o",
+                linestyle="-",
+                linewidth=2,
+                markersize=MARKER_SIZE_PRIMARY,
+                label="real",
+            )
+            legend_map.setdefault("real", real_line)
+        if not estimate_part.empty:
+            estimate_line, = axis.plot(
+                estimate_part["epsilon"],
+                estimate_part["estimated_total_ios"],
+                color=FITCAM_CURVE_COLOR_MAP["estimate"],
+                marker=None,
+                linestyle="-",
+                linewidth=2,
+                solid_capstyle="round",
+                solid_joinstyle="round",
+                label="estimate",
+            )
+            legend_map.setdefault("estimate", estimate_line)
+        if not calibrated_part.empty:
+            calibrated_line, = axis.plot(
+                calibrated_part["epsilon"],
+                calibrated_part["corrected_total_ios"],
+                color=FITCAM_CURVE_COLOR_MAP["calibrated"],
+                marker=None,
+                linestyle="-",
+                linewidth=2,
+                solid_capstyle="round",
+                solid_joinstyle="round",
+                label="calibrated estimate",
+            )
+            legend_map.setdefault("calibrated estimate", calibrated_line)
+        if not err_before_part.empty:
+            err_before_line, = axis_right.plot(
+                err_before_part["epsilon"],
+                err_before_part["error_before"],
+                color=FITCAM_CURVE_COLOR_MAP["error_before"],
+                marker="x",
+                linestyle="None",
+                markersize=MARKER_SIZE_ERROR,
+                label="error before calibration",
+            )
+            legend_map.setdefault("error before calibration", err_before_line)
+        if not err_after_part.empty:
+            err_after_line, = axis_right.plot(
+                err_after_part["epsilon"],
+                err_after_part["error_after"],
+                color=FITCAM_CURVE_COLOR_MAP["error_after"],
+                marker="x",
+                linestyle="None",
+                markersize=MARKER_SIZE_ERROR,
+                label="error after calibration",
+            )
+            legend_map.setdefault("error after calibration", err_after_line)
+        axis_right.axhline(0.0, color="tab:gray", linestyle=":", linewidth=1.2, alpha=0.8)
+
+        axis.set_title(f"M = {m_value}MB", fontsize=TITLE_FONTSIZE)
+        apply_outer_labels(axis, idx, nrows, ncols, "Epsilon", "Total I/Os")
+        apply_outer_right_ylabel(axis_right, idx, ncols, "Error (Total I/Os)")
+        axis.grid(alpha=0.3)
+        apply_scientific_y(axis)
+        apply_scientific_y(axis_right)
+        apply_tick_font(axis)
+        apply_tick_font(axis_right)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    save_figure(fig, output_path)
+    save_legend_figure(list(legend_map.values()), list(legend_map.keys()), legend_output_path, ncol=3)
+
+
+def write_fitcam_outputs(
+    dataset_key: str,
+    output_dir: Path,
+    prefix: str,
+    fitcam_root: Path,
+    revision_log_dir: Path | None,
+    policies: set[str] | None,
+    m_values: set[int] | None,
+    full_reference_df: pd.DataFrame,
+) -> list[Path]:
+    artifact_paths: list[Path] = []
+
+    # Prefer revised full estimate logs produced by fitcam_local_runner.py:
+    #   build/log/${DATA_FILE}_${POLICY}_revision.log
+    revision_dir = (revision_log_dir or fitcam_root.parent).resolve()
+    revision_sources = discover_revision_log_sources(revision_dir, dataset_key, policies)
+
+    if revision_sources:
+        for policy, revision_log in sorted(revision_sources.items()):
+            policy_df = load_revision_curve_frame(
+                revision_log=revision_log,
+                dataset_key=dataset_key,
+                policy=policy,
+                full_reference_df=full_reference_df,
+                allowed_m_values=m_values,
+            )
+            policy_df = filter_min_epsilon(policy_df)
+            if policy_df.empty:
+                continue
+
+            merged_csv_path = output_dir / f"{prefix}_{policy.lower()}_fitcam_revision_curve_metrics.csv"
+            figure_path = output_dir / f"{prefix}_{policy.lower()}_fitcam_revision_error_vs_epsilon.pdf"
+            legend_path = output_dir / f"{prefix}_{policy.lower()}_fitcam_revision_error_vs_epsilon_legend.pdf"
+            policy_df.to_csv(merged_csv_path, index=False)
+            plot_fitcam_policy_curves(policy_df, figure_path, legend_path)
+            artifact_paths.extend([merged_csv_path, figure_path, legend_path])
+        return artifact_paths
+
+    # Backward-compatible fallback: q30 corrected-vs-real CSVs.
+    fitcam_dir = fitcam_root / dataset_key / "fit_output"
+    if not fitcam_dir.exists():
+        return []
+
+    sources = discover_fitcam_curve_sources(fitcam_dir, dataset_key, policies)
+    for policy, corrected_csv in sorted(sources.items()):
+        policy_df = load_fitcam_curve_frame(
+            corrected_csv=corrected_csv,
+            fitcam_dir=fitcam_dir,
+            dataset_key=dataset_key,
+            policy=policy,
+            full_reference_df=full_reference_df,
+            allowed_m_values=m_values,
+        )
+        policy_df = filter_min_epsilon(policy_df)
+        if policy_df.empty:
+            continue
+
+        merged_csv_path = output_dir / f"{prefix}_{policy.lower()}_fitcam_curve_metrics.csv"
+        figure_path = output_dir / f"{prefix}_{policy.lower()}_fitcam_curve_error_vs_epsilon.pdf"
+        legend_path = output_dir / f"{prefix}_{policy.lower()}_fitcam_curve_error_vs_epsilon_legend.pdf"
+        policy_df.to_csv(merged_csv_path, index=False)
+        plot_fitcam_policy_curves(policy_df, figure_path, legend_path)
+        artifact_paths.extend([merged_csv_path, figure_path, legend_path])
+
+    return artifact_paths
+
 def plot_logical_io_vs_epsilon(dataset_df: pd.DataFrame, output_path: Path, legend_output_path: Path) -> None:
+    dataset_df = filter_min_epsilon(dataset_df)
     m_values = sorted(dataset_df["M"].unique().tolist())
     fig, axes, nrows, ncols = make_axes(m_values)
     policies = ordered_policies(dataset_df)
@@ -455,33 +1064,38 @@ def plot_logical_io_vs_epsilon(dataset_df: pd.DataFrame, output_path: Path, lege
     for idx, (axis, m_value) in enumerate(zip(axes, m_values)):
         part_m = dataset_df[dataset_df["M"] == m_value].copy()
         for policy in policies:
-            part = part_m[part_m["policy"] == policy].sort_values("epsilon")
+            part = filter_min_epsilon(part_m[part_m["policy"] == policy]).sort_values("epsilon")
             if part.empty:
                 continue
             color = COLOR_MAP.get(policy, None)
-            actual_line, = axis.plot(
-                part["epsilon"],
-                part["actual_total_logical_ios"],
-                color=color,
-                marker="o",
-                linestyle="-",
-                linewidth=2,
-                markersize=5,
-                label=f"{policy} actual",
-            )
-            estimated_line, = axis.plot(
-                part["epsilon"],
-                part["estimated_total_logical_ios"],
-                color=color,
-                marker="s",
-                linestyle="--",
-                linewidth=2,
-                markersize=4,
-                label=f"{policy} estimated",
-            )
-            legend_map.setdefault(f"{policy} actual", actual_line)
-            legend_map.setdefault(f"{policy} estimated", estimated_line)
-        axis.set_title(f"M = {m_value}MB")
+            actual_part = series_rows(part, "actual_total_logical_ios")
+            estimated_part = series_rows(part, "estimated_total_logical_ios")
+            if not actual_part.empty:
+                actual_line, = axis.plot(
+                    actual_part["epsilon"],
+                    actual_part["actual_total_logical_ios"],
+                    color=color,
+                    marker="o",
+                    linestyle="-",
+                    linewidth=2,
+                    markersize=MARKER_SIZE_PRIMARY,
+                    label=f"{policy} actual",
+                )
+                legend_map.setdefault(f"{policy} actual", actual_line)
+            if not estimated_part.empty:
+                estimated_line, = axis.plot(
+                    estimated_part["epsilon"],
+                    estimated_part["estimated_total_logical_ios"],
+                    color=color,
+                    marker=None,
+                    linestyle="-",
+                    linewidth=2,
+                    solid_capstyle="round",
+                    solid_joinstyle="round",
+                    label=f"{policy} estimated",
+                )
+                legend_map.setdefault(f"{policy} estimated", estimated_line)
+        axis.set_title(f"M = {m_value}MB", fontsize=TITLE_FONTSIZE)
         apply_outer_labels(axis, idx, nrows, ncols, "Epsilon", "Total IOs")
         axis.grid(alpha=0.3)
         apply_scientific_y(axis)
@@ -495,6 +1109,7 @@ def plot_logical_io_vs_epsilon(dataset_df: pd.DataFrame, output_path: Path, lege
 
 
 def plot_hit_ratio_vs_epsilon(dataset_df: pd.DataFrame, output_path: Path, legend_output_path: Path) -> None:
+    dataset_df = filter_min_epsilon(dataset_df)
     m_values = sorted(dataset_df["M"].unique().tolist())
     fig, axes, nrows, ncols = make_axes(m_values)
     policies = ordered_policies(dataset_df)
@@ -503,33 +1118,38 @@ def plot_hit_ratio_vs_epsilon(dataset_df: pd.DataFrame, output_path: Path, legen
     for idx, (axis, m_value) in enumerate(zip(axes, m_values)):
         part_m = dataset_df[dataset_df["M"] == m_value].copy()
         for policy in policies:
-            part = part_m[part_m["policy"] == policy].sort_values("epsilon")
+            part = filter_min_epsilon(part_m[part_m["policy"] == policy]).sort_values("epsilon")
             if part.empty:
                 continue
             color = COLOR_MAP.get(policy, None)
-            actual_line, = axis.plot(
-                part["epsilon"],
-                part["actual_hit_ratio"],
-                color=color,
-                marker="o",
-                linestyle="-",
-                linewidth=2,
-                markersize=5,
-                label=f"{policy} actual",
-            )
-            estimated_line, = axis.plot(
-                part["epsilon"],
-                part["estimated_hit_ratio"],
-                color=color,
-                marker="s",
-                linestyle="--",
-                linewidth=2,
-                markersize=4,
-                label=f"{policy} estimated",
-            )
-            legend_map.setdefault(f"{policy} actual", actual_line)
-            legend_map.setdefault(f"{policy} estimated", estimated_line)
-        axis.set_title(f"M = {m_value}MB")
+            actual_part = series_rows(part, "actual_hit_ratio")
+            estimated_part = series_rows(part, "estimated_hit_ratio")
+            if not actual_part.empty:
+                actual_line, = axis.plot(
+                    actual_part["epsilon"],
+                    actual_part["actual_hit_ratio"],
+                    color=color,
+                    marker="o",
+                    linestyle="-",
+                    linewidth=2,
+                    markersize=MARKER_SIZE_PRIMARY,
+                    label=f"{policy} actual",
+                )
+                legend_map.setdefault(f"{policy} actual", actual_line)
+            if not estimated_part.empty:
+                estimated_line, = axis.plot(
+                    estimated_part["epsilon"],
+                    estimated_part["estimated_hit_ratio"],
+                    color=color,
+                    marker=None,
+                    linestyle="-",
+                    linewidth=2,
+                    solid_capstyle="round",
+                    solid_joinstyle="round",
+                    label=f"{policy} estimated",
+                )
+                legend_map.setdefault(f"{policy} estimated", estimated_line)
+        axis.set_title(f"M = {m_value}MB", fontsize=TITLE_FONTSIZE)
         apply_outer_labels(axis, idx, nrows, ncols, "Epsilon", "Cache Hit Ratio")
         axis.grid(alpha=0.3)
         ratio_values = pd.concat([part_m["actual_hit_ratio"], part_m["estimated_hit_ratio"]], ignore_index=True)
@@ -546,6 +1166,7 @@ def plot_estimated_io_and_throughput(
     output_path: Path,
     legend_output_path: Path,
 ) -> None:
+    dataset_df = filter_min_epsilon(dataset_df)
     m_values = sorted(dataset_df["M"].unique().tolist())
     fig, axes, nrows, ncols = make_axes(m_values)
     policies = ordered_policies(dataset_df)
@@ -556,34 +1177,39 @@ def plot_estimated_io_and_throughput(
         part_m = dataset_df[dataset_df["M"] == m_value].copy()
 
         for policy in policies:
-            part = part_m[part_m["policy"] == policy].sort_values("epsilon")
+            part = filter_min_epsilon(part_m[part_m["policy"] == policy]).sort_values("epsilon")
             if part.empty:
                 continue
             color = COLOR_MAP.get(policy, None)
-            left_line, = axis.plot(
-                part["epsilon"],
-                part["estimated_total_logical_ios"],
-                color=color,
-                marker="s",
-                linestyle="--",
-                linewidth=2,
-                markersize=4,
-                label=f"{policy} estimated IO",
-            )
-            right_line, = axis_right.plot(
-                part["epsilon"],
-                part["actual_throughput_qps"],
-                color=color,
-                marker="o",
-                linestyle="-",
-                linewidth=2,
-                markersize=5,
-                label=f"{policy} throughput",
-            )
-            legend_map.setdefault(f"{policy} estimated IO", left_line)
-            legend_map.setdefault(f"{policy} throughput", right_line)
+            estimated_part = series_rows(part, "estimated_total_logical_ios")
+            throughput_part = series_rows(part, "actual_throughput_qps")
+            if not estimated_part.empty:
+                left_line, = axis.plot(
+                    estimated_part["epsilon"],
+                    estimated_part["estimated_total_logical_ios"],
+                    color=color,
+                    marker=None,
+                    linestyle="-",
+                    linewidth=2,
+                    solid_capstyle="round",
+                    solid_joinstyle="round",
+                    label=f"{policy} estimated IO",
+                )
+                legend_map.setdefault(f"{policy} estimated IO", left_line)
+            if not throughput_part.empty:
+                right_line, = axis_right.plot(
+                    throughput_part["epsilon"],
+                    throughput_part["actual_throughput_qps"],
+                    color=color,
+                    marker="o",
+                    linestyle="-",
+                    linewidth=2,
+                    markersize=MARKER_SIZE_PRIMARY,
+                    label=f"{policy} throughput",
+                )
+                legend_map.setdefault(f"{policy} throughput", right_line)
 
-        axis.set_title(f"M = {m_value}MB")
+        axis.set_title(f"M = {m_value}MB", fontsize=TITLE_FONTSIZE)
         apply_outer_labels(axis, idx, nrows, ncols, "Epsilon", "Total IOs")
         apply_outer_right_ylabel(axis_right, idx, ncols, "Throughput (qps)")
         axis.grid(alpha=0.3)
@@ -637,12 +1263,14 @@ def write_report(
     figure_paths: list[Path],
 ) -> None:
     dataset_key = str(dataset_df["dataset_key"].iloc[0])
+    workload_types = sorted(dataset_df.get("workload_type", pd.Series(["unknown"])).dropna().astype(str).unique())
     lines = [
         "# Epsilon Benchmark Report",
         "",
         "## Inputs",
         "",
         f"- Dataset: {dataset_key}",
+        f"- Workload type(s): {', '.join(workload_types)}",
         f"- Estimate logs: {len(estimate_paths)}",
         f"- Bench CSVs: {len(bench_paths)}",
         f"- Merged rows: {len(dataset_df)}",
@@ -652,7 +1280,8 @@ def write_report(
         "## Schema Normalization",
         "",
         "- Estimated `cost` is interpreted as estimated average logical IOs per query.",
-        "- Estimated total logical IOs are computed as `cost * queries`.",
+        "- Benchmark `queries` is used directly for point workloads; range benchmark `ranges` is normalized to `queries` internally.",
+        "- Estimated total logical IOs are computed as `cost * queries` after this normalization.",
         "- Actual IO uses `logical_ios`, not `physical_ios`.",
         "- Throughput plots use `epsilon` on the x-axis, estimated logical IO on the left y-axis, and actual throughput on the right y-axis.",
         "",
@@ -684,21 +1313,39 @@ def write_dataset_outputs(
     dataset_df: pd.DataFrame,
     output_dir: Path,
     prefix: str,
+    fitcam_root: Path,
+    revision_log_dir: Path | None,
+    policies: set[str] | None,
+    m_values: set[int] | None,
+    skip_fitcam: bool,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     merged_csv_path = output_dir / f"{prefix}_merged_metrics.csv"
-    logical_io_path = output_dir / f"{prefix}_logical_ios_vs_epsilon.png"
-    logical_io_legend_path = output_dir / f"{prefix}_logical_ios_vs_epsilon_legend.png"
-    hit_ratio_path = output_dir / f"{prefix}_hit_ratio_vs_epsilon.png"
-    hit_ratio_legend_path = output_dir / f"{prefix}_hit_ratio_vs_epsilon_legend.png"
-    throughput_path = output_dir / f"{prefix}_estimated_io_throughput_vs_epsilon.png"
-    throughput_legend_path = output_dir / f"{prefix}_estimated_io_throughput_vs_epsilon_legend.png"
+    logical_io_path = output_dir / f"{prefix}_logical_ios_vs_epsilon.pdf"
+    logical_io_legend_path = output_dir / f"{prefix}_logical_ios_vs_epsilon_legend.pdf"
+    hit_ratio_path = output_dir / f"{prefix}_hit_ratio_vs_epsilon.pdf"
+    hit_ratio_legend_path = output_dir / f"{prefix}_hit_ratio_vs_epsilon_legend.pdf"
+    throughput_path = output_dir / f"{prefix}_estimated_io_throughput_vs_epsilon.pdf"
+    throughput_legend_path = output_dir / f"{prefix}_estimated_io_throughput_vs_epsilon_legend.pdf"
     report_path = output_dir / f"{prefix}_report.md"
 
     dataset_df.to_csv(merged_csv_path, index=False)
     plot_logical_io_vs_epsilon(dataset_df, logical_io_path, logical_io_legend_path)
     plot_hit_ratio_vs_epsilon(dataset_df, hit_ratio_path, hit_ratio_legend_path)
     plot_estimated_io_and_throughput(dataset_df, throughput_path, throughput_legend_path)
+    fitcam_artifact_paths: list[Path] = []
+    if not skip_fitcam:
+        fitcam_m_values = m_values or set(dataset_df["M"].dropna().astype(int).unique().tolist())
+        fitcam_artifact_paths = write_fitcam_outputs(
+            dataset_key=str(dataset_df["dataset_key"].iloc[0]),
+            output_dir=output_dir,
+            prefix=prefix,
+            fitcam_root=fitcam_root,
+            revision_log_dir=revision_log_dir,
+            policies=policies,
+            m_values=fitcam_m_values,
+            full_reference_df=dataset_df[["policy", "M", "epsilon", "queries", "actual_total_logical_ios"]].copy(),
+        )
     write_report(
         dataset_df=dataset_df,
         output_path=report_path,
@@ -712,6 +1359,7 @@ def write_dataset_outputs(
             throughput_path,
             throughput_legend_path,
             merged_csv_path,
+            *fitcam_artifact_paths,
         ],
     )
     return [
@@ -722,6 +1370,7 @@ def write_dataset_outputs(
         hit_ratio_legend_path,
         throughput_path,
         throughput_legend_path,
+        *fitcam_artifact_paths,
         report_path,
     ]
 
@@ -745,13 +1394,25 @@ def main() -> None:
         raise ValueError("No benchmark rows remained after applying the requested filters.")
 
     merged = merge_frames(estimates, benches)
+    merged = filter_min_epsilon(merged)
+    if merged.empty:
+        raise ValueError(f"No rows remained after filtering epsilon >= {MIN_PLOTTED_EPSILON}.")
     dataset_keys = sorted(merged["dataset_key"].dropna().unique().tolist())
     multiple_datasets = len(dataset_keys) > 1
 
     for dataset_key in dataset_keys:
         dataset_df = merged[merged["dataset_key"] == dataset_key].copy()
         prefix = build_prefix(str(dataset_key), args.output_prefix, multiple_datasets)
-        artifact_paths = write_dataset_outputs(dataset_df, args.output_dir, prefix)
+        artifact_paths = write_dataset_outputs(
+            dataset_df=dataset_df,
+            output_dir=args.output_dir,
+            prefix=prefix,
+            fitcam_root=args.fitcam_root,
+            revision_log_dir=args.revision_log_dir,
+            policies=policies,
+            m_values=m_values,
+            skip_fitcam=args.skip_fitcam,
+        )
         for path in artifact_paths:
             print(path)
 
