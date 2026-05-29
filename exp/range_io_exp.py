@@ -298,6 +298,20 @@ def prepare_range_prefix(
     return queries[:keep], total_queries, keep
 
 
+def prepare_range_position_cache(data: np.ndarray, queries: np.ndarray) -> dict[str, np.ndarray | int | str]:
+    n_keys = int(len(data))
+    if n_keys <= 0:
+        raise ValueError("empty key array")
+    lo_pos = np.searchsorted(data, queries[:, 0], side="right") - 1
+    hi_pos = np.searchsorted(data, queries[:, 1], side="right") - 1
+    return {
+        "kind": "range_positions",
+        "lo_pos": np.clip(lo_pos, 0, n_keys - 1).astype(np.int64),
+        "hi_pos": np.clip(hi_pos, 0, n_keys - 1).astype(np.int64),
+        "n_keys": n_keys,
+    }
+
+
 def estimate_range_cost(
     *,
     epsilon: int,
@@ -312,20 +326,31 @@ def estimate_range_cost(
     first_touch_scale: float,
     conservative: bool,
     cold_start_correction: bool,
+    range_position_cache: dict[str, np.ndarray | int | str] | None = None,
 ) -> tuple[float, float, dict[str, float]]:
     index_bytes = float(n_keys * seg_size / (2 * epsilon))
     buffer_bytes = max(0.0, float(memory_bytes) - index_bytes)
     cache_pages = max(0, int(buffer_bytes / page_size))
     total_pages = math.ceil(n_keys / ipp)
 
-    page_counts, total_refs, q = optimalEpsilon.estimate_page_counts_from_range_queryfile(
-        lo_keys=queries[:, 0],
-        hi_keys=queries[:, 1],
-        data=data,
-        epsilon=epsilon,
-        ipp=ipp,
-        conservative=conservative,
-    )
+    if range_position_cache is not None:
+        page_counts, total_refs, q = optimalEpsilon.estimate_page_counts_from_range_positions(
+            lo_pos=range_position_cache["lo_pos"],
+            hi_pos=range_position_cache["hi_pos"],
+            n_keys=range_position_cache["n_keys"],
+            epsilon=epsilon,
+            ipp=ipp,
+            conservative=conservative,
+        )
+    else:
+        page_counts, total_refs, q = optimalEpsilon.estimate_page_counts_from_range_queryfile(
+            lo_keys=queries[:, 0],
+            hi_keys=queries[:, 1],
+            data=data,
+            epsilon=epsilon,
+            ipp=ipp,
+            conservative=conservative,
+        )
     avg_rdac = float(total_refs) / float(max(1, queries.shape[0]))
     scaled_total_refs = float(total_refs) * max(0.0, float(first_touch_scale))
     expected_distinct_pages = float(np.count_nonzero(page_counts > 0))
@@ -397,6 +422,7 @@ def cmd_estimate(args: argparse.Namespace) -> None:
                 query_limit=args.query_limit,
                 learning_fraction=args.learning_fraction,
             )
+            range_position_cache = prepare_range_position_cache(data, queries)
             preprocess_time_s = time.perf_counter() - preprocess_t0
             first_touch_scale = float(total_queries) / float(max(1, estimate_queries))
 
@@ -417,6 +443,7 @@ def cmd_estimate(args: argparse.Namespace) -> None:
                         "policy": args.policy,
                         "data": data,
                         "queries": queries,
+                        "range_position_cache": range_position_cache,
                         "first_touch_scale": first_touch_scale,
                         "conservative": not args.non_conservative,
                         "cold_start_correction": args.cold_start_correction,

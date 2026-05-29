@@ -639,6 +639,63 @@ def get_RDAC(rlo, rhi, epsilon, ipp):
 
     return out.reshape(rlo.shape)
 
+def estimate_page_counts_from_range_positions(
+    lo_pos,
+    hi_pos,
+    n_keys,
+    epsilon,
+    ipp,
+    conservative=True,
+):
+    """Aggregate range-query page references from precomputed key ranks."""
+    import math
+    import numpy as np
+
+    eps = int(epsilon)
+    ipp = int(ipp)
+    N = int(n_keys)
+    if N <= 0:
+        raise ValueError("empty key array")
+    num_pages = math.ceil(N / ipp)
+
+    lo_pos = np.asarray(lo_pos, dtype=np.int64)
+    hi_pos = np.asarray(hi_pos, dtype=np.int64)
+    if lo_pos.shape != hi_pos.shape:
+        raise ValueError("lo_pos and hi_pos must have the same shape")
+
+    left_pos = np.minimum(lo_pos, hi_pos)
+    right_pos = np.maximum(lo_pos, hi_pos)
+
+    if conservative:
+        start_pos = np.maximum(0, left_pos - 2 * eps)
+        end_pos = np.minimum(N - 1, right_pos + 2 * eps)
+    else:
+        start_pos = left_pos
+        end_pos = right_pos
+
+    start_pages = (start_pos // ipp).astype(np.int64, copy=False)
+    end_pages = (end_pos // ipp).astype(np.int64, copy=False)
+
+    # difference array: interval add [start_page, end_page] += 1
+    diff = np.zeros(num_pages + 1, dtype=np.float64)
+
+    np.add.at(diff, start_pages, 1.0)
+
+    end_next = end_pages + 1
+    valid = end_next <= num_pages
+    np.add.at(diff, end_next[valid], -1.0)
+
+    page_counts = np.cumsum(diff[:-1])
+
+    total_refs = float(page_counts.sum())
+    if total_refs <= 0:
+        q = np.zeros_like(page_counts, dtype=np.float64)
+    else:
+        q = page_counts / total_refs
+
+    return page_counts, total_refs, q
+
+
 def estimate_page_counts_from_range_queryfile(
     lo_keys,
     hi_keys,
@@ -673,51 +730,23 @@ def estimate_page_counts_from_range_queryfile(
         total_refs: float, total estimated page references.
         q: np.ndarray, normalized page request probability.
     """
-    import math
     import numpy as np
 
-    eps = int(epsilon)
-    ipp = int(ipp)
     N = len(data)
-    num_pages = math.ceil(N / ipp)
-
     lo_pos = np.searchsorted(data, lo_keys, side="right") - 1
     hi_pos = np.searchsorted(data, hi_keys, side="right") - 1
 
     lo_pos = np.clip(lo_pos, 0, N - 1).astype(np.int64)
     hi_pos = np.clip(hi_pos, 0, N - 1).astype(np.int64)
 
-    left_pos = np.minimum(lo_pos, hi_pos)
-    right_pos = np.maximum(lo_pos, hi_pos)
-
-    if conservative:
-        start_pos = np.maximum(0, left_pos - 2 * eps)
-        end_pos = np.minimum(N - 1, right_pos + 2 * eps)
-    else:
-        start_pos = left_pos
-        end_pos = right_pos
-
-    start_pages = (start_pos // ipp).astype(np.int64, copy=False)
-    end_pages = (end_pos // ipp).astype(np.int64, copy=False)
-
-    # difference array: interval add [start_page, end_page] += 1
-    diff = np.zeros(num_pages + 1, dtype=np.float64)
-
-    np.add.at(diff, start_pages, 1.0)
-
-    end_next = end_pages + 1
-    valid = end_next <= num_pages
-    np.add.at(diff, end_next[valid], -1.0)
-
-    page_counts = np.cumsum(diff[:-1])
-
-    total_refs = float(page_counts.sum())
-    if total_refs <= 0:
-        q = np.zeros_like(page_counts, dtype=np.float64)
-    else:
-        q = page_counts / total_refs
-
-    return page_counts, total_refs, q
+    return estimate_page_counts_from_range_positions(
+        lo_pos=lo_pos,
+        hi_pos=hi_pos,
+        n_keys=N,
+        epsilon=epsilon,
+        ipp=ipp,
+        conservative=conservative,
+    )
 
 def range_cost_function(
     epsilon,

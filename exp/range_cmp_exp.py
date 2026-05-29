@@ -167,6 +167,7 @@ def cmd_cam_estimate(args: argparse.Namespace) -> None:
             setup_t0 = time.perf_counter()
             keep = sample_size(total_queries, fraction)
             sample_ranges = np.asarray(full_ranges[:keep], dtype=np.uint64)
+            range_position_cache = range_io.prepare_range_position_cache(data, sample_ranges)
             setup_time_s = time.perf_counter() - setup_t0
             first_touch_scale = float(total_queries) / float(keep)
 
@@ -183,6 +184,7 @@ def cmd_cam_estimate(args: argparse.Namespace) -> None:
                         "policy": args.policy,
                         "data": data,
                         "queries": sample_ranges,
+                        "range_position_cache": range_position_cache,
                         "first_touch_scale": first_touch_scale,
                         "conservative": not args.non_conservative,
                         "cold_start_correction": args.cold_start_correction,
