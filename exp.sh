@@ -136,15 +136,15 @@
 #   --M 16 \
 #   > build/log/rmi/books_10M_M16_rmi_bench.csv
 
-./exp/run_pgm_tuner_cache_compare.py \
-  --data books_200M_uint64_unique \
-  --queries books_200M_uint64_unique.query.bin \
-  --keys 200000000 \
-  --M 4 \
-  --candidate-eps 4-128 \
-  --cache-ratios 0.25,0.50,0.75 \
-  --tuner-bin ./build/tuner \
-  --cam-bin ./build/pgm_cam_covariance
+# ./exp/run_pgm_tuner_cache_compare.py \
+#   --data books_200M_uint64_unique \
+#   --queries books_200M_uint64_unique.query.bin \
+#   --keys 200000000 \
+#   --M 8 \
+#   --candidate-eps 4-128 \
+#   --cache-ratios 0.25,0.50,0.75 \
+#   --tuner-bin ./build/tuner \
+#   --cam-bin ./build/pgm_cam_covariance
 
 # python3 exp/run_rmi_tuner_cache_compare.py \
 #   --data books_200M_uint64_unique \
@@ -162,3 +162,22 @@
 #   --candidate-bfs 256,512,1024,2048,4096,8192,16384,32768,65536,131072,262144,524288,1048576,2097152 \
 #   --force-optimizer
 
+# python3 exp/extract_cmp_summary_table.py \
+#   --root build/log/point_cmp \
+#   --kind point \
+#   --workloads w1 w2 w4 w6 \
+#   --datasets books fb osm wiki \
+#   --rates 10 30 50 100 \
+#   --M 128 \
+#   --methods CAM replay lpm \
+#   --metric q_error
+
+  python3 exp/extract_cmp_summary_table.py \
+  --root build/log/range_cmp \
+  --kind range \
+  --workloads w1 w2 w4 w6 \
+  --datasets books fb osm wiki \
+  --rates 10 30 50 100 \
+  --M 128 \
+  --methods CAM replay lpm \
+  --metric q_error

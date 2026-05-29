@@ -121,13 +121,6 @@ struct SummaryRow {
     );
 }
 
-size_t detect_record_count(const std::string& filename) {
-    const auto bytes = fs::file_size(filename);
-    if (bytes % sizeof(KeyT) != 0) {
-        throw std::runtime_error("data file size is not a multiple of key size");
-    }
-    return bytes / sizeof(KeyT);
-}
 
 size_t estimate_index_bytes(size_t total_keys, size_t epsilon) {
     return (kEstimatedSegmentBytes * total_keys) / (2 * epsilon);
@@ -250,9 +243,6 @@ Config parse_args(int argc, char** argv) {
         usage_error("both --data and --queries are required");
     }
 
-    if (cfg.total_keys == 0) {
-        cfg.total_keys = detect_record_count(cfg.data_path);
-    }
 
     if (!eps_explicit) {
         cfg.epsilons = make_epsilon_range(cfg.epsilon_start, cfg.epsilon_end, cfg.epsilon_step);
@@ -420,7 +410,9 @@ SummaryRow run_one_policy(
     row.measured_index_bytes = measured_index_bytes;
     row.reserved_index_bytes =
         cfg.budget_mode == BudgetMode::ESTIMATED ? estimated_index_bytes : measured_index_bytes;
-    row.cache_bytes = (cfg.budget_mode == BudgetMode::RAW) ? cfg.M :safe_subtract(cfg.M, row.reserved_index_bytes);
+    row.cache_bytes = policy == CachePolicy::NONE
+        ? 0
+        : ((cfg.budget_mode == BudgetMode::RAW) ? cfg.M : safe_subtract(cfg.M, row.reserved_index_bytes));
     row.cache_pages = row.cache_bytes / PAGE_SIZE;
     row.index_build_ns = index_build_ns;
     row.queries = queries.size();
@@ -584,7 +576,9 @@ int main(int argc, char** argv) {
     try {
         Config cfg = parse_args(argc, argv);
 
-        auto data = load_data_pgm_safe<KeyT>(cfg.data_path, cfg.total_keys);
+        const auto data_layout = cam::storage::detect_key_file_layout(cfg.data_path, cfg.total_keys);
+        cfg.total_keys = data_layout.total_keys;
+        auto data = cam::storage::load_key_file_keys(data_layout);
         auto queries = load_queries_pgm_safe<KeyT>(cfg.query_path);
         if (cfg.query_limit > 0 && queries.size() > cfg.query_limit) {
             queries.resize(cfg.query_limit);

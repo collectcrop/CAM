@@ -120,7 +120,7 @@ def plot_metric(
         axes = [axes]
 
     x = np.arange(len(memories), dtype=float)
-    bar_width = min(0.12, 0.78 / max(1, len(workloads)))
+    bar_width = min(0.16, 0.82 / max(1, len(workloads)))
 
     for ax, dataset in zip(axes, datasets):
         for idx, workload in enumerate(workloads):

@@ -16,6 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "utils"))
 import optimalEpsilon  # noqa: E402
 
 
+RAW_WIKI_DATASET = "wiki_ts_200M_uint64"
+
+
 WORKLOAD_RATIOS: dict[str, tuple[float, float, float]] = {
     "w1": (0.0, 0.0, 1.0),
     "w2": (0.0, 1.0, 0.0),
@@ -54,6 +57,13 @@ def dataset_path(datasets_directory: Path, dataset: str) -> Path:
     if path.is_absolute():
         return path
     return datasets_directory / dataset
+
+
+def open_key_array(path: Path) -> np.ndarray:
+    mm = np.memmap(path, dtype=np.uint64, mode="r")
+    if len(mm) > 0 and int(mm[0]) == len(mm) - 1:
+        return mm[1:]
+    return mm
 
 
 def workload_path(workload_dir: Path, dataset: str, workload: str) -> Path:
@@ -176,7 +186,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
         data_path_ = dataset_path(args.datasets_directory, dataset)
         if not data_path_.exists():
             raise FileNotFoundError(f"missing dataset: {data_path_}")
-        keys = np.memmap(data_path_, dtype=np.uint64, mode="r")
+        keys = open_key_array(data_path_)
 
         for workload in args.workloads:
             if workload not in WORKLOAD_RATIOS:
@@ -351,15 +361,29 @@ def estimate_range_cost(
     return estimated_avg_io, h, detail
 
 
+def validate_timing_args(args: argparse.Namespace) -> None:
+    if args.warmup_repeats < 0:
+        raise ValueError("--warmup-repeats must be >= 0")
+    if args.timing_repeats < 1:
+        raise ValueError("--timing-repeats must be >= 1")
+
+
 def cmd_estimate(args: argparse.Namespace) -> None:
+    validate_timing_args(args)
     epsilons = parse_epsilons(args.epsilons)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    for dataset in args.datasets:
+    datasets = list(args.datasets)
+    if args.shuffle_datasets:
+        rng = np.random.default_rng(args.shuffle_seed)
+        datasets = [datasets[i] for i in rng.permutation(len(datasets))]
+        print(f"[estimate] shuffled dataset order: {' '.join(datasets)}")
+
+    for dataset in datasets:
         data_path_ = dataset_path(args.datasets_directory, dataset)
         if not data_path_.exists():
             raise FileNotFoundError(f"missing dataset: {data_path_}")
-        data = np.memmap(data_path_, dtype=np.uint64, mode="r")
+        data = open_key_array(data_path_)
         n_keys = int(len(data))
 
         for workload in args.workloads:
@@ -383,22 +407,32 @@ def cmd_estimate(args: argparse.Namespace) -> None:
             for m_mib in args.memory_list:
                 memory_bytes = int(m_mib) * 1024 * 1024
                 for eps in epsilons:
-                    t0 = time.perf_counter()
-                    estimated_avg_io, hit_ratio, detail = estimate_range_cost(
-                        epsilon=int(eps),
-                        n_keys=n_keys,
-                        seg_size=args.seg_size,
-                        memory_bytes=memory_bytes,
-                        ipp=args.ipp,
-                        page_size=args.page_size,
-                        policy=args.policy,
-                        data=data,
-                        queries=queries,
-                        first_touch_scale=first_touch_scale,
-                        conservative=not args.non_conservative,
-                        cold_start_correction=args.cold_start_correction,
-                    )
-                    estimate_time_s = time.perf_counter() - t0
+                    estimate_kwargs = {
+                        "epsilon": int(eps),
+                        "n_keys": n_keys,
+                        "seg_size": args.seg_size,
+                        "memory_bytes": memory_bytes,
+                        "ipp": args.ipp,
+                        "page_size": args.page_size,
+                        "policy": args.policy,
+                        "data": data,
+                        "queries": queries,
+                        "first_touch_scale": first_touch_scale,
+                        "conservative": not args.non_conservative,
+                        "cold_start_correction": args.cold_start_correction,
+                    }
+                    for _ in range(args.warmup_repeats):
+                        estimate_range_cost(**estimate_kwargs)
+
+                    timings: list[float] = []
+                    estimated_avg_io = 0.0
+                    hit_ratio = 0.0
+                    detail: dict[str, float] = {}
+                    for _ in range(args.timing_repeats):
+                        t0 = time.perf_counter()
+                        estimated_avg_io, hit_ratio, detail = estimate_range_cost(**estimate_kwargs)
+                        timings.append(time.perf_counter() - t0)
+                    estimate_time_s = float(np.median(timings))
                     rows.append(
                         {
                             "dataset": dataset,
@@ -414,6 +448,13 @@ def cmd_estimate(args: argparse.Namespace) -> None:
                             "estimated_total_ios": float(estimated_avg_io) * float(total_queries),
                             "estimated_avg_rdac": float(detail["avg_rdac"]),
                             "estimate_time_s": float(estimate_time_s),
+                            "estimate_time_mean_s": float(np.mean(timings)),
+                            "estimate_time_min_s": float(np.min(timings)),
+                            "estimate_time_max_s": float(np.max(timings)),
+                            "estimate_time_std_s": float(np.std(timings, ddof=0)),
+                            "estimate_timing_repeats": int(args.timing_repeats),
+                            "estimate_warmup_repeats": int(args.warmup_repeats),
+                            "estimate_shuffle_seed": int(args.shuffle_seed),
                             "preprocess_time_s": float(preprocess_time_s),
                             "estimate_queries": estimate_queries,
                             "total_queries": total_queries,
@@ -483,6 +524,37 @@ def load_actual_csv(path: Path, dataset: str, workload: str, policy: str) -> pd.
     ]
 
 
+def require_unique_merge_keys(df: pd.DataFrame, keys: list[str], name: str) -> None:
+    dup = df[df.duplicated(keys, keep=False)]
+    if dup.empty:
+        return
+    sample = dup.loc[:, keys].drop_duplicates().head(5).to_dict("records")
+    raise ValueError(f"{name} rows are not unique for merge keys {keys}; examples: {sample}")
+
+
+def align_estimated_ios_to_actual_queries(merged: pd.DataFrame) -> pd.DataFrame:
+    merged = merged.copy()
+    actual_queries = pd.to_numeric(merged["queries"], errors="coerce")
+    if "total_queries" in merged.columns:
+        estimate_queries = pd.to_numeric(merged["total_queries"], errors="coerce")
+    else:
+        estimate_queries = actual_queries
+
+    raw_estimated_ios = pd.to_numeric(merged["estimated_total_ios"], errors="coerce")
+    if "estimated_avg_io" in merged.columns:
+        estimated_avg_io = pd.to_numeric(merged["estimated_avg_io"], errors="coerce")
+    else:
+        estimated_avg_io = raw_estimated_ios / estimate_queries.replace(0, np.nan)
+
+    aligned = estimated_avg_io * actual_queries
+    fallback_scale = np.where(estimate_queries > 0, actual_queries / estimate_queries, np.nan)
+    fallback = raw_estimated_ios * fallback_scale
+    merged["estimated_total_ios_for_actual_queries"] = aligned.where(aligned.notna(), fallback)
+    merged["query_count_delta"] = actual_queries - estimate_queries
+    merged["query_count_ratio"] = np.where(estimate_queries > 0, actual_queries / estimate_queries, np.nan)
+    return merged
+
+
 def cmd_summarize(args: argparse.Namespace) -> None:
     frames_actual: list[pd.DataFrame] = []
     frames_est: list[pd.DataFrame] = []
@@ -509,6 +581,10 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     estimate["policy"] = estimate["policy"].astype(str).str.upper()
     estimate["M"] = pd.to_numeric(estimate["M"], errors="coerce").astype(int)
     estimate["epsilon"] = pd.to_numeric(estimate["epsilon"], errors="coerce").astype(int)
+    if "budget_mode" in estimate.columns:
+        estimate = estimate[estimate["budget_mode"].astype(str).str.lower() == "estimated"].copy()
+        if estimate.empty:
+            raise ValueError("estimate CSVs contain no rows with budget_mode=estimated")
     for col in (
         "steady_hit_ratio",
         "cold_miss_ratio",
@@ -520,6 +596,8 @@ def cmd_summarize(args: argparse.Namespace) -> None:
             estimate[col] = np.nan
 
     keys = ["dataset", "dataset_label", "workload", "M", "epsilon", "policy", "strategy"]
+    require_unique_merge_keys(actual, keys, "actual")
+    require_unique_merge_keys(estimate, keys, "estimate")
     merged = actual.merge(estimate, on=keys, how="inner", suffixes=("_actual", "_estimate"))
     if merged.empty:
         raise ValueError("actual and estimate CSVs have no overlapping rows")
@@ -528,9 +606,10 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     merged = merged[merged["epsilon"].isin(eps_set)].copy()
     if merged.empty:
         raise ValueError("no rows remain after epsilon filtering")
+    merged = align_estimated_ios_to_actual_queries(merged)
 
     actual_ios = pd.to_numeric(merged["actual_total_ios"], errors="coerce")
-    estimated_ios = pd.to_numeric(merged["estimated_total_ios"], errors="coerce")
+    estimated_ios = pd.to_numeric(merged["estimated_total_ios_for_actual_queries"], errors="coerce")
     merged["absolute_error"] = (estimated_ios - actual_ios).abs()
     merged["relative_error"] = np.where(actual_ios > 0, merged["absolute_error"] / actual_ios, np.nan)
     merged["accuracy"] = np.where(actual_ios > 0, 1.0 - merged["relative_error"], np.nan)
@@ -546,7 +625,9 @@ def cmd_summarize(args: argparse.Namespace) -> None:
             mean_estimate_time_s=("estimate_time_s", "mean"),
             total_estimate_time_s=("estimate_time_s", "sum"),
             mean_actual_total_ios=("actual_total_ios", "mean"),
-            mean_estimated_total_ios=("estimated_total_ios", "mean"),
+            mean_estimated_total_ios=("estimated_total_ios_for_actual_queries", "mean"),
+            mean_estimated_total_ios_raw=("estimated_total_ios", "mean"),
+            mean_query_count_delta=("query_count_delta", "mean"),
             actual_queries=("queries", "max"),
             estimate_queries=("estimate_queries", "max"),
             mean_actual_avg_io=("actual_avg_io", "mean"),
@@ -577,7 +658,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         default=[
             "books_200M_uint64_unique",
             "fb_200M_uint64_unique",
-            "wiki_ts_200M_uint64_unique",
+            RAW_WIKI_DATASET,
             "osm_cellids_200M_uint64_unique",
         ],
     )
@@ -615,6 +696,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_est.add_argument("--seg-size", type=int, default=16)
     p_est.add_argument("--ipp", type=int, default=512)
     p_est.add_argument("--page-size", type=int, default=4096)
+    p_est.add_argument(
+        "--warmup-repeats",
+        type=int,
+        default=0,
+        help="Run this many untimed estimator calls before timing each M/epsilon row.",
+    )
+    p_est.add_argument(
+        "--timing-repeats",
+        type=int,
+        default=1,
+        help="Run this many timed estimator calls and report estimate_time_s as the median.",
+    )
+    p_est.add_argument(
+        "--shuffle-datasets",
+        action="store_true",
+        help="Shuffle dataset processing order before the estimate pass.",
+    )
+    p_est.add_argument("--shuffle-seed", type=int, default=42)
     p_est.add_argument(
         "--non-conservative",
         action="store_true",

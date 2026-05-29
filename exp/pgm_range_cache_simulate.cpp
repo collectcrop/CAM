@@ -111,13 +111,6 @@ struct SummaryRow {
     );
 }
 
-size_t detect_record_count(const std::string& filename) {
-    const auto bytes = fs::file_size(filename);
-    if (bytes % sizeof(KeyT) != 0) {
-        throw std::runtime_error("data file size is not a multiple of key size");
-    }
-    return bytes / sizeof(KeyT);
-}
 
 size_t estimate_index_bytes(size_t total_keys, size_t epsilon) {
     return (kEstimatedSegmentBytes * total_keys) / (2 * epsilon);
@@ -234,9 +227,6 @@ Config parse_args(int argc, char** argv) {
         usage_error("both --data and --queries are required");
     }
 
-    if (cfg.total_keys == 0) {
-        cfg.total_keys = detect_record_count(cfg.data_path);
-    }
 
     if (!eps_explicit) {
         cfg.epsilons = make_epsilon_range(cfg.epsilon_start, cfg.epsilon_end, cfg.epsilon_step);
@@ -486,7 +476,9 @@ int main(int argc, char** argv) {
     try {
         Config cfg = parse_args(argc, argv);
 
-        auto data = load_data_pgm_safe<KeyT>(cfg.data_path, cfg.total_keys);
+        const auto data_layout = cam::storage::detect_key_file_layout(cfg.data_path, cfg.total_keys);
+        cfg.total_keys = data_layout.total_keys;
+        auto data = cam::storage::load_key_file_keys(data_layout);
         auto ranges = load_ranges_pgm_safe(cfg.query_path);
         if (cfg.query_limit > 0 && ranges.size() > cfg.query_limit) {
             ranges.resize(cfg.query_limit);

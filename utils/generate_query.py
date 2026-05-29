@@ -559,24 +559,24 @@ def main():
 
     
     """ partition join"""
-    alpha = 1.637e-06
-    beta = 1.719e-06
-    lambda_point = 1.195e-06
-    lambda_range = 4.669e-07
-    delta = 0.005
-    eta = 4.421e-06
-    page_size = 4096
-    epsilon = 16
-    queryfile = "books_200M_uint64_unique.1Mtable2.bin"
-    dataset = "books_200M_uint64_unique"
-    raw = np.fromfile(f"{DATASETS_DIRECTORY}{dataset}", dtype=np.uint64)
-    keys = raw
-    queries = np.fromfile(f"{DATASETS_DIRECTORY}{queryfile}", dtype=np.uint64)
-    lengths_file=f"{DATASETS_DIRECTORY}{queryfile}.par".replace(".bin","")
-    bitmap_file=f"{DATASETS_DIRECTORY}{queryfile}.bitmap".replace(".bin","")
-    join_partition(keys,queries,alpha=alpha,beta=beta,eta=eta,lambda_point=lambda_point,lambda_range=lambda_range,delta=delta,
-                   page_size=page_size,key_size=8,epsilon=epsilon,N_min=4096,K_max=8192
-                   ,lengths_file=lengths_file,bitmap_file=bitmap_file)
+    # alpha = 1.637e-06
+    # beta = 1.719e-06
+    # lambda_point = 1.195e-06
+    # lambda_range = 4.669e-07
+    # delta = 0.005
+    # eta = 4.421e-06
+    # page_size = 4096
+    # epsilon = 16
+    # queryfile = "books_200M_uint64_unique.1Mtable2.bin"
+    # dataset = "books_200M_uint64_unique"
+    # raw = np.fromfile(f"{DATASETS_DIRECTORY}{dataset}", dtype=np.uint64)
+    # keys = raw
+    # queries = np.fromfile(f"{DATASETS_DIRECTORY}{queryfile}", dtype=np.uint64)
+    # lengths_file=f"{DATASETS_DIRECTORY}{queryfile}.par".replace(".bin","")
+    # bitmap_file=f"{DATASETS_DIRECTORY}{queryfile}.bitmap".replace(".bin","")
+    # join_partition(keys,queries,alpha=alpha,beta=beta,eta=eta,lambda_point=lambda_point,lambda_range=lambda_range,delta=delta,
+    #                page_size=page_size,key_size=8,epsilon=epsilon,N_min=4096,K_max=8192
+    #                ,lengths_file=lengths_file,bitmap_file=bitmap_file)
             
 if __name__ == '__main__':
     main()

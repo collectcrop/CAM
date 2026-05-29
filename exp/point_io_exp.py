@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import csv
 import math
-import random
 import time
 from pathlib import Path
 
@@ -15,6 +14,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "utils"))
 import optimalEpsilon  # noqa: E402
+
+
+RAW_WIKI_DATASET = "wiki_ts_200M_uint64"
 
 
 WORKLOAD_RATIOS: dict[str, tuple[float, float, float]] = {
@@ -57,6 +59,13 @@ def dataset_path(datasets_directory: Path, dataset: str) -> Path:
     return datasets_directory / dataset
 
 
+def open_key_array(path: Path) -> np.ndarray:
+    mm = np.memmap(path, dtype=np.uint64, mode="r")
+    if len(mm) > 0 and int(mm[0]) == len(mm) - 1:
+        return mm[1:]
+    return mm
+
+
 def workload_path(workload_dir: Path, dataset: str, workload: str) -> Path:
     return workload_dir / dataset / f"{dataset}.{workload}.bin"
 
@@ -67,6 +76,155 @@ def actual_path(actual_dir: Path, dataset: str, workload: str, m_mib: int, polic
 
 def estimate_path(estimate_dir: Path, dataset: str, workload: str, policy: str) -> Path:
     return estimate_dir / dataset / f"{dataset}_{workload}_{policy.upper()}_estimate.csv"
+
+
+def sample_hotspot_queries(
+    keys: np.ndarray,
+    count: int,
+    rng: np.random.Generator,
+    num_hotspots: int,
+    hotspot_frac: float,
+    hotspot_zipf_a: float,
+) -> np.ndarray:
+    if count <= 0:
+        return np.empty(0, dtype=np.uint64)
+    n = int(len(keys))
+    hotspot_size = max(1, int(hotspot_frac * n))
+    hotspot_size = min(hotspot_size, n)
+    per_hotspot = int(math.ceil(count / max(1, num_hotspots)))
+    hot_parts: list[np.ndarray] = []
+    for _ in range(max(1, num_hotspots)):
+        hi_base = max(0, n - hotspot_size)
+        base = int(rng.integers(0, hi_base + 1))
+        idx = rng.zipf(hotspot_zipf_a, size=per_hotspot) - 1
+        idx = np.clip(idx, 0, hotspot_size - 1)
+        hot_parts.append(np.asarray(keys[base + idx], dtype=np.uint64))
+    return np.concatenate(hot_parts)[:count].astype(np.uint64, copy=False)
+
+
+def sample_zipf_queries(
+    keys: np.ndarray,
+    count: int,
+    rng: np.random.Generator,
+    zipf_a: float,
+) -> np.ndarray:
+    if count <= 0:
+        return np.empty(0, dtype=np.uint64)
+    n = int(len(keys))
+    idx = rng.zipf(zipf_a, size=count) - 1
+    idx = np.clip(idx, 0, n - 1)
+    return np.asarray(keys[idx], dtype=np.uint64)
+
+
+def sample_uniform_queries(
+    keys: np.ndarray,
+    count: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    if count <= 0:
+        return np.empty(0, dtype=np.uint64)
+    n = int(len(keys))
+    idx = rng.integers(0, n, size=count, endpoint=False)
+    return np.asarray(keys[idx], dtype=np.uint64)
+
+
+def global_source_counts(num_queries: int, hot_ratio: float, zipf_ratio: float) -> tuple[int, int, int]:
+    total_hot = int(num_queries * hot_ratio)
+    total_zipf = int(num_queries * zipf_ratio)
+    total_uniform = num_queries - total_hot - total_zipf
+    return total_hot, total_zipf, total_uniform
+
+
+def generate_query_parts(
+    keys: np.ndarray,
+    m_hot: int,
+    m_zipf: int,
+    m_uniform: int,
+    rng: np.random.Generator,
+    num_hotspots: int,
+    hotspot_frac: float,
+    hotspot_zipf_a: float,
+    zipf_a: float,
+) -> list[np.ndarray]:
+    parts: list[np.ndarray] = []
+    if m_hot > 0:
+        parts.append(sample_hotspot_queries(keys, m_hot, rng, num_hotspots, hotspot_frac, hotspot_zipf_a))
+    if m_zipf > 0:
+        parts.append(sample_zipf_queries(keys, m_zipf, rng, zipf_a))
+    if m_uniform > 0:
+        parts.append(sample_uniform_queries(keys, m_uniform, rng))
+    return parts
+
+
+def is_single_distribution(counts: tuple[int, int, int]) -> bool:
+    return sum(1 for count in counts if count > 0) <= 1
+
+
+def allocate_window_counts(
+    num_queries: int,
+    window_size: int,
+    global_counts: tuple[int, int, int],
+    rng: np.random.Generator,
+    jitter: float,
+) -> list[tuple[int, int, int]]:
+    if num_queries <= 0:
+        raise ValueError("num_queries must be positive")
+    if window_size <= 0:
+        raise ValueError("window_size must be positive")
+    if jitter < 0:
+        raise ValueError("window_ratio_jitter must be non-negative")
+    if sum(global_counts) != num_queries:
+        raise ValueError("global_counts must sum to num_queries")
+
+    remaining = np.asarray(global_counts, dtype=np.int64)
+    base_probs = remaining.astype(np.float64) / float(num_queries)
+    counts: list[tuple[int, int, int]] = []
+    num_windows = int(math.ceil(num_queries / window_size))
+
+    for window_idx in range(num_windows):
+        remaining_windows = num_windows - window_idx
+        remaining_queries = int(remaining.sum())
+        current_size = min(window_size, remaining_queries)
+        if current_size <= 0:
+            break
+
+        if remaining_windows == 1:
+            draw = remaining.copy()
+        else:
+            weights = base_probs.copy()
+            if jitter > 0:
+                weights *= rng.uniform(max(0.0, 1.0 - jitter), 1.0 + jitter, size=3)
+            weights = np.where(remaining > 0, weights, 0.0)
+            if float(weights.sum()) <= 0.0:
+                weights = remaining.astype(np.float64)
+            probs = weights / float(weights.sum())
+
+            draw = np.zeros(3, dtype=np.int64)
+            for _ in range(current_size):
+                available = remaining - draw
+                step_weights = np.where(available > 0, probs, 0.0)
+                if float(step_weights.sum()) <= 0.0:
+                    step_weights = np.where(available > 0, available.astype(np.float64), 0.0)
+                step_probs = step_weights / float(step_weights.sum())
+                source = int(rng.choice(3, p=step_probs))
+                draw[source] += 1
+
+        if np.any(draw < 0) or np.any(draw > remaining):
+            raise AssertionError("invalid window allocation")
+        if int(draw.sum()) != current_size:
+            raise AssertionError("window allocation does not match window size")
+        counts.append((int(draw[0]), int(draw[1]), int(draw[2])))
+        remaining -= draw
+
+    sum_hot = sum(c[0] for c in counts)
+    sum_zipf = sum(c[1] for c in counts)
+    sum_uniform = sum(c[2] for c in counts)
+    assert (sum_hot, sum_zipf, sum_uniform) == tuple(global_counts)
+    assert sum(sum(c) for c in counts) == num_queries
+    for idx, count_tuple in enumerate(counts):
+        expected_size = min(window_size, num_queries - idx * window_size)
+        assert sum(count_tuple) == expected_size
+    return counts
 
 
 def sample_point_mixture(
@@ -82,46 +240,81 @@ def sample_point_mixture(
     zipf_a: float,
 ) -> np.ndarray:
     rng = np.random.default_rng(seed)
-    random.seed(seed)
     n = int(len(keys))
     if n <= 0:
         raise ValueError("empty key array")
 
-    parts: list[np.ndarray] = []
-    m_hot = int(num_queries * hot_ratio)
-    m_zipf = int(num_queries * zipf_ratio)
-    m_uniform = num_queries - m_hot - m_zipf
-
-    if m_hot > 0:
-        hotspot_size = max(1, int(hotspot_frac * n))
-        hotspot_size = min(hotspot_size, n)
-        per_hotspot = int(math.ceil(m_hot / max(1, num_hotspots)))
-        hot_parts: list[np.ndarray] = []
-        for _ in range(max(1, num_hotspots)):
-            hi_base = max(0, n - hotspot_size)
-            base = int(rng.integers(0, hi_base + 1))
-            idx = rng.zipf(hotspot_zipf_a, size=per_hotspot) - 1
-            idx = np.clip(idx, 0, hotspot_size - 1)
-            hot_parts.append(np.asarray(keys[base + idx], dtype=np.uint64))
-        parts.append(np.concatenate(hot_parts)[:m_hot])
-
-    if m_zipf > 0:
-        idx = rng.zipf(zipf_a, size=m_zipf) - 1
-        idx = np.clip(idx, 0, n - 1)
-        parts.append(np.asarray(keys[idx], dtype=np.uint64))
-
-    if m_uniform > 0:
-        idx = rng.integers(0, n, size=m_uniform, endpoint=False)
-        parts.append(np.asarray(keys[idx], dtype=np.uint64))
-
+    m_hot, m_zipf, m_uniform = global_source_counts(num_queries, hot_ratio, zipf_ratio)
+    parts = generate_query_parts(
+        keys,
+        m_hot,
+        m_zipf,
+        m_uniform,
+        rng,
+        num_hotspots,
+        hotspot_frac,
+        hotspot_zipf_a,
+        zipf_a,
+    )
     if not parts:
         raise ValueError("workload ratios generated no queries")
 
     queries = np.concatenate(parts).astype(np.uint64, copy=False)
     if queries.size != num_queries:
-        queries = queries[:num_queries]
+        raise AssertionError(f"generated {queries.size} queries, expected {num_queries}")
     rng.shuffle(queries)
+    assert queries.dtype == np.uint64
     return queries
+
+
+def sample_point_mixture_windowed(
+    keys: np.ndarray,
+    num_queries: int,
+    seed: int,
+    hot_ratio: float,
+    zipf_ratio: float,
+    uniform_ratio: float,
+    num_hotspots: int,
+    hotspot_frac: float,
+    hotspot_zipf_a: float,
+    zipf_a: float,
+    window_size: int,
+    window_ratio_jitter: float,
+) -> tuple[np.ndarray, list[tuple[int, int, int]]]:
+    rng = np.random.default_rng(seed)
+    n = int(len(keys))
+    if n <= 0:
+        raise ValueError("empty key array")
+
+    global_counts = global_source_counts(num_queries, hot_ratio, zipf_ratio)
+    window_counts = allocate_window_counts(num_queries, window_size, global_counts, rng, window_ratio_jitter)
+    windows: list[np.ndarray] = []
+    for m_hot, m_zipf, m_uniform in window_counts:
+        parts = generate_query_parts(
+            keys,
+            m_hot,
+            m_zipf,
+            m_uniform,
+            rng,
+            num_hotspots,
+            hotspot_frac,
+            hotspot_zipf_a,
+            zipf_a,
+        )
+        if parts:
+            window_queries = np.concatenate(parts).astype(np.uint64, copy=False)
+        else:
+            window_queries = np.empty(0, dtype=np.uint64)
+        if int(window_queries.size) != m_hot + m_zipf + m_uniform:
+            raise AssertionError("window generated query count mismatch")
+        rng.shuffle(window_queries)
+        windows.append(window_queries)
+
+    queries = np.concatenate(windows).astype(np.uint64, copy=False) if windows else np.empty(0, dtype=np.uint64)
+    assert queries.size == num_queries
+    assert queries.dtype == np.uint64
+    assert tuple(map(sum, zip(*window_counts))) == global_counts
+    return queries, window_counts
 
 
 def cmd_generate(args: argparse.Namespace) -> None:
@@ -132,7 +325,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
         data_path = dataset_path(args.datasets_directory, dataset)
         if not data_path.exists():
             raise FileNotFoundError(f"missing dataset: {data_path}")
-        keys = np.memmap(data_path, dtype=np.uint64, mode="r")
+        keys = open_key_array(data_path)
 
         for workload in args.workloads:
             if workload not in WORKLOAD_RATIOS:
@@ -141,27 +334,57 @@ def cmd_generate(args: argparse.Namespace) -> None:
             out.parent.mkdir(parents=True, exist_ok=True)
             hot, zipf, uniform = WORKLOAD_RATIOS[workload]
 
+            effective_order_mode = args.order_mode
+            global_counts = global_source_counts(args.num_queries, hot, zipf)
+            window_counts: list[tuple[int, int, int]] = []
+
             if out.exists() and not args.force:
                 query_count = out.stat().st_size // np.dtype(np.uint64).itemsize
                 print(f"[generate][skip] {out} ({query_count} queries)")
             else:
                 workload_id = int(workload[1:]) if workload.startswith("w") else 0
                 seed = args.seed + workload_id + stable_dataset_seed(dataset)
-                queries = sample_point_mixture(
-                    keys,
-                    num_queries=args.num_queries,
-                    seed=seed,
-                    hot_ratio=hot,
-                    zipf_ratio=zipf,
-                    uniform_ratio=uniform,
-                    num_hotspots=args.num_hotspots,
-                    hotspot_frac=args.hotspot_frac,
-                    hotspot_zipf_a=args.hotspot_zipf_a,
-                    zipf_a=args.zipf_a,
-                )
+                if args.order_mode == "window_mixture_shuffle" and not is_single_distribution(global_counts):
+                    queries, window_counts = sample_point_mixture_windowed(
+                        keys,
+                        num_queries=args.num_queries,
+                        seed=seed,
+                        hot_ratio=hot,
+                        zipf_ratio=zipf,
+                        uniform_ratio=uniform,
+                        num_hotspots=args.num_hotspots,
+                        hotspot_frac=args.hotspot_frac,
+                        hotspot_zipf_a=args.hotspot_zipf_a,
+                        zipf_a=args.zipf_a,
+                        window_size=args.window_size,
+                        window_ratio_jitter=args.window_ratio_jitter,
+                    )
+                else:
+                    effective_order_mode = "global_shuffle"
+                    queries = sample_point_mixture(
+                        keys,
+                        num_queries=args.num_queries,
+                        seed=seed,
+                        hot_ratio=hot,
+                        zipf_ratio=zipf,
+                        uniform_ratio=uniform,
+                        num_hotspots=args.num_hotspots,
+                        hotspot_frac=args.hotspot_frac,
+                        hotspot_zipf_a=args.hotspot_zipf_a,
+                        zipf_a=args.zipf_a,
+                    )
+                if queries.size != args.num_queries or queries.dtype != np.uint64:
+                    raise AssertionError("generated workload failed size/dtype sanity checks")
                 queries.tofile(out)
                 query_count = int(queries.size)
-                print(f"[generate] {dataset} {workload} -> {out} ({query_count} queries)")
+                num_windows = len(window_counts) if window_counts else int(math.ceil(query_count / args.window_size))
+                print(
+                    f"[generate] {dataset} {workload} mode={effective_order_mode} "
+                    f"counts hot/zipf/uniform={global_counts[0]}/{global_counts[1]}/{global_counts[2]} "
+                    f"windows={num_windows} window_size={args.window_size} -> {out} ({query_count} queries)"
+                )
+                for idx, count_tuple in enumerate(window_counts[:5]):
+                    print(f"[generate][window {idx}] hot/zipf/uniform={count_tuple[0]}/{count_tuple[1]}/{count_tuple[2]}")
 
             rows.append(
                 {
@@ -173,6 +396,9 @@ def cmd_generate(args: argparse.Namespace) -> None:
                     "hotspot_ratio": hot,
                     "zipf_ratio": zipf,
                     "uniform_ratio": uniform,
+                    "order_mode": effective_order_mode,
+                    "window_size": args.window_size,
+                    "window_ratio_jitter": args.window_ratio_jitter,
                 }
             )
 
@@ -216,7 +442,7 @@ def cmd_estimate(args: argparse.Namespace) -> None:
         data_path_ = dataset_path(args.datasets_directory, dataset)
         if not data_path_.exists():
             raise FileNotFoundError(f"missing dataset: {data_path_}")
-        data = np.memmap(data_path_, dtype=np.uint64, mode="r")
+        data = open_key_array(data_path_)
         n_keys = int(len(data))
 
         for workload in args.workloads:
@@ -341,6 +567,37 @@ def load_actual_csv(path: Path, dataset: str, workload: str, policy: str) -> pd.
     ]
 
 
+def require_unique_merge_keys(df: pd.DataFrame, keys: list[str], name: str) -> None:
+    dup = df[df.duplicated(keys, keep=False)]
+    if dup.empty:
+        return
+    sample = dup.loc[:, keys].drop_duplicates().head(5).to_dict("records")
+    raise ValueError(f"{name} rows are not unique for merge keys {keys}; examples: {sample}")
+
+
+def align_estimated_ios_to_actual_queries(merged: pd.DataFrame) -> pd.DataFrame:
+    merged = merged.copy()
+    actual_queries = pd.to_numeric(merged["queries"], errors="coerce")
+    if "total_queries" in merged.columns:
+        estimate_queries = pd.to_numeric(merged["total_queries"], errors="coerce")
+    else:
+        estimate_queries = actual_queries
+
+    raw_estimated_ios = pd.to_numeric(merged["estimated_total_ios"], errors="coerce")
+    if "estimated_avg_io" in merged.columns:
+        estimated_avg_io = pd.to_numeric(merged["estimated_avg_io"], errors="coerce")
+    else:
+        estimated_avg_io = raw_estimated_ios / estimate_queries.replace(0, np.nan)
+
+    aligned = estimated_avg_io * actual_queries
+    fallback_scale = np.where(estimate_queries > 0, actual_queries / estimate_queries, np.nan)
+    fallback = raw_estimated_ios * fallback_scale
+    merged["estimated_total_ios_for_actual_queries"] = aligned.where(aligned.notna(), fallback)
+    merged["query_count_delta"] = actual_queries - estimate_queries
+    merged["query_count_ratio"] = np.where(estimate_queries > 0, actual_queries / estimate_queries, np.nan)
+    return merged
+
+
 def cmd_summarize(args: argparse.Namespace) -> None:
     frames_actual: list[pd.DataFrame] = []
     frames_est: list[pd.DataFrame] = []
@@ -367,6 +624,10 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     estimate["policy"] = estimate["policy"].astype(str).str.upper()
     estimate["M"] = pd.to_numeric(estimate["M"], errors="coerce").astype(int)
     estimate["epsilon"] = pd.to_numeric(estimate["epsilon"], errors="coerce").astype(int)
+    if "budget_mode" in estimate.columns:
+        estimate = estimate[estimate["budget_mode"].astype(str).str.lower() == "estimated"].copy()
+        if estimate.empty:
+            raise ValueError("estimate CSVs contain no rows with budget_mode=estimated")
     for col in (
         "steady_hit_ratio",
         "cold_miss_ratio",
@@ -377,6 +638,8 @@ def cmd_summarize(args: argparse.Namespace) -> None:
             estimate[col] = np.nan
 
     keys = ["dataset", "dataset_label", "workload", "M", "epsilon", "policy", "strategy"]
+    require_unique_merge_keys(actual, keys, "actual")
+    require_unique_merge_keys(estimate, keys, "estimate")
     merged = actual.merge(estimate, on=keys, how="inner", suffixes=("_actual", "_estimate"))
     if merged.empty:
         raise ValueError("actual and estimate CSVs have no overlapping rows")
@@ -385,9 +648,10 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     merged = merged[merged["epsilon"].isin(eps_set)].copy()
     if merged.empty:
         raise ValueError("no rows remain after epsilon filtering")
+    merged = align_estimated_ios_to_actual_queries(merged)
 
     actual_ios = pd.to_numeric(merged["actual_total_ios"], errors="coerce")
-    estimated_ios = pd.to_numeric(merged["estimated_total_ios"], errors="coerce")
+    estimated_ios = pd.to_numeric(merged["estimated_total_ios_for_actual_queries"], errors="coerce")
     merged["absolute_error"] = (estimated_ios - actual_ios).abs()
     merged["relative_error"] = np.where(actual_ios > 0, merged["absolute_error"] / actual_ios, np.nan)
     merged["accuracy"] = np.where(actual_ios > 0, 1.0 - merged["relative_error"], np.nan)
@@ -403,7 +667,9 @@ def cmd_summarize(args: argparse.Namespace) -> None:
             mean_estimate_time_s=("estimate_time_s", "mean"),
             total_estimate_time_s=("estimate_time_s", "sum"),
             mean_actual_total_ios=("actual_total_ios", "mean"),
-            mean_estimated_total_ios=("estimated_total_ios", "mean"),
+            mean_estimated_total_ios=("estimated_total_ios_for_actual_queries", "mean"),
+            mean_estimated_total_ios_raw=("estimated_total_ios", "mean"),
+            mean_query_count_delta=("query_count_delta", "mean"),
             actual_queries=("queries", "max"),
             estimate_queries=("estimate_queries", "max"),
             mean_steady_hit_ratio=("steady_hit_ratio", "mean"),
@@ -428,7 +694,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--datasets",
         nargs="+",
-        default=["books_200M_uint64_unique", "fb_200M_uint64_unique", "wiki_ts_200M_uint64_unique", "osm_cellids_200M_uint64_unique"],
+        default=["books_200M_uint64_unique", "fb_200M_uint64_unique", RAW_WIKI_DATASET, "osm_cellids_200M_uint64_unique"],
     )
     parser.add_argument("--workloads", nargs="+", default=["w1", "w2", "w3", "w4", "w5", "w6"])
 
@@ -446,6 +712,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument("--hotspot-frac", type=float, default=0.01)
     p_gen.add_argument("--hotspot-zipf-a", type=float, default=1.5)
     p_gen.add_argument("--zipf-a", type=float, default=1.2)
+    p_gen.add_argument("--order-mode", choices=["global_shuffle", "window_mixture_shuffle"], default="global_shuffle")
+    p_gen.add_argument("--window-size", type=int, default=100_000)
+    p_gen.add_argument("--window-ratio-jitter", type=float, default=0.3)
     p_gen.add_argument("--force", action="store_true")
     p_gen.set_defaults(func=cmd_generate)
 

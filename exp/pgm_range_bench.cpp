@@ -58,13 +58,6 @@ struct RunResult {
         " [--keys <n>] [--M <MiB>] [--policies <fifo,lru,lfu,none|all>]");
 }
 
-size_t detect_record_count(const std::string& filename) {
-    const auto bytes = fs::file_size(filename);
-    if (bytes % sizeof(KeyType) != 0) {
-        throw std::runtime_error("data file size is not a multiple of key size");
-    }
-    return bytes / sizeof(KeyType);
-}
 
 size_t estimated_index_bytes(size_t total_keys, size_t epsilon) {
     return (16 * total_keys) / (2 * epsilon);
@@ -104,9 +97,6 @@ Config parse_args(int argc, char** argv) {
 
     if (cfg.data_path.empty() || cfg.query_path.empty()) {
         usage_error("both --data and --queries are required");
-    }
-    if (cfg.total_keys == 0) {
-        cfg.total_keys = detect_record_count(cfg.data_path);
     }
     return cfg;
 }
@@ -221,9 +211,8 @@ void run_epsilon(
 int main(int argc, char** argv) {
     try {
         const Config cfg = parse_args(argc, argv);
-        const auto data_layout = cam::storage::detect_key_file_layout(
-            cfg.data_path, cfg.total_keys, cam::storage::HeaderMode::NO);
-        const auto data = load_data_pgm_safe<KeyType>(cfg.data_path, cfg.total_keys);
+        const auto data_layout = cam::storage::detect_key_file_layout(cfg.data_path, cfg.total_keys);
+        const auto data = cam::storage::load_key_file_keys(data_layout);
         const auto ranges = load_ranges_pgm_safe(cfg.query_path);
 
         print_header();

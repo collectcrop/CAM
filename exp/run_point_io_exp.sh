@@ -16,7 +16,7 @@ ESTIMATE_DIR="${ESTIMATE_DIR:-$ROOT_DIR/estimate}"
 SUMMARY_DIR="${SUMMARY_DIR:-$ROOT_DIR/summary}"
 FIGURE_DIR="${FIGURE_DIR:-$ROOT_DIR/figures}"
 
-DATASETS="${DATASETS:-books_200M_uint64_unique fb_200M_uint64_unique wiki_ts_200M_uint64_unique osm_cellids_200M_uint64_unique}"
+DATASETS="${DATASETS:-books_200M_uint64_unique fb_200M_uint64_unique wiki_ts_200M_uint64 osm_cellids_200M_uint64_unique}"
 WORKLOADS="${WORKLOADS:-w1 w2 w3 w4 w5 w6}"
 MEMORY_LIST="${MEMORY_LIST:-64 96 128 160}"
 EPS_LIST="${EPS_LIST:-8,10,12,14,16,20,24,32,64}"

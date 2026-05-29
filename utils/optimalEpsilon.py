@@ -798,6 +798,7 @@ def cost_function(epsilon, n, seg_size, M, ipp, ps,
                   data_arr=None, H=None, Q=None, measured_index_bytes=None,
                   cold_start_correction=False, first_touch_scale=1.0,
                   return_detail=False):
+    cache_policy_upper = str(cache_policy).upper()
     if BUDGET_MODE == "RAW":
         M_index = 0
         M_buffer = M
@@ -809,6 +810,8 @@ def cost_function(epsilon, n, seg_size, M, ipp, ps,
     else:
         M_index = n * seg_size / (2 * epsilon)
         M_buffer = M - M_index
+    if cache_policy_upper == "NONE":
+        M_buffer = 0
     C = M_buffer/ps
     cache_pages = max(0, int(C))
     total_pages = math.ceil(n / ipp)

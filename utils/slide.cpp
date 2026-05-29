@@ -51,8 +51,7 @@ void slice(std::string infile, std::string outfile, size_t m){
 }
 int main() {
     std::string output_file;
-    std::vector<size_t> mlist = {10000000ULL, 20000000ULL, 30000000ULL, 50000000ULL, 70000000ULL, 
-        90000000ULL, 100000000ULL};  
+    std::vector<size_t> mlist = {200000000ULL};  
     std::string prefix = "wiki_ts";
     std::string input_file = prefix + "_200M_uint64";
     for (auto &m : mlist){
