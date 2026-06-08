@@ -17,7 +17,7 @@ DATASETS_DIRECTORY = "/mnt/data/Dataset/public/SOSD/"
 LOG_DIRECTORY = "build/log/"
 # BUDGET_MODE = "RAW"
 BUDGET_MODE = "ESTIMATED"
-LEARNING_QUERY_FRACTION = 0.3
+LEARNING_QUERY_FRACTION = 1
 
 
 def take_learning_query_prefix(queries, fraction=None):
@@ -261,49 +261,6 @@ def estimate_page_counts_from_queryfile(
         accumulate_first_touch(tgt[valid], prob_table[row, offsets[valid]], cnt[valid])
 
     return finish(Q_local)
-
-# def estimate_page_counts_from_queryfile(query_file, data, epsilon, ipp, use_fft=False, H=None, Q=None):
-#     """
-#     args:
-#       query_file: binary file path or numpy array of query keys (uint64)
-#       data: sorted data keys (np.array dtype uint64)
-#       epsilon: int
-#       ipp: items per page
-#     returns:
-#       page_counts: np.array length num_pages, expected counts per page (sum ~= Q * (2eps+1))
-#       T_pos: np.array length N, expected counts per position
-#       Q: queries length
-#     """    
-#     assert isinstance(data, np.ndarray)
-#     N = len(data)
-#     if H is None:
-#         H, Q = prepare_query_histogram(query_file, data)
-#     else:
-#         H = np.asarray(H, dtype=np.float64)
-#         if H.shape[0] != N:
-#             raise ValueError(f"len(H)={H.shape[0]} != len(data)={N}")
-#         if Q is None:
-#             Q = int(round(float(H.sum())))
-
-#     # 2) construct k = g * h. assume g = uniform box, h = uniform box => k = triangular
-#     k = triangular_kernel_from_box(epsilon)  # length K = 4*eps + 1, sums to 1
-
-#     # 3) convolution
-#     if use_fft:
-#         T = fftconvolve(H, k, mode='same')
-#     else:
-#         T = np.convolve(H, k, mode='same')
-
-#     # 4) page aggregation
-#     num_pages = math.ceil(N / ipp)
-#     pad_len = num_pages * ipp - N
-#     if pad_len > 0:
-#         T_padded = np.concatenate([T, np.zeros(pad_len, dtype=T.dtype)])
-#     else:
-#         T_padded = T
-#     page_counts = T_padded.reshape(num_pages, ipp).sum(axis=1)  # expected counts per page
-
-#     return page_counts, T, Q
 
 def extract_data_gap_distribution(data_file):
     """
@@ -903,7 +860,8 @@ def cost_function(epsilon, n, seg_size, M, ipp, ps,
 def getExpectedRangeCostPerEpsilon(ipp, seg_size, M, n, ps,
                                    data_file="",query_file="",cache_policy="LRU",
                                    log_path="",
-                                   cold_start_correction=False):
+                                   cold_start_correction=False,
+                                   epsilons=None):
     data = f"{DATASETS_DIRECTORY}{data_file}"
     query = f"{DATASETS_DIRECTORY}{query_file}"
     eps_list = []
@@ -911,7 +869,11 @@ def getExpectedRangeCostPerEpsilon(ipp, seg_size, M, n, ps,
     h_list = []
     time_list = []
     least_eps = math.ceil(n*seg_size/(2*M)) if BUDGET_MODE != "RAW" else 2
-    for eps in range(least_eps if (least_eps%2==0) else least_eps+1, 129, 2):     
+    if epsilons is None:
+        eps_iter = range(least_eps if (least_eps%2==0) else least_eps+1, 129, 2)
+    else:
+        eps_iter = [int(eps) for eps in epsilons if int(eps) >= least_eps]
+    for eps in eps_iter:
         t1 = time.time()
         cost,h = range_cost_function(eps, n, seg_size, M, ipp, ps, query, data,
                                      cache_policy,
@@ -947,7 +909,8 @@ def getExpectedCostPerEpsilon(ipp, seg_size, M, n, ps,
                               data_file="",query_file="",s="all_in_once",
                               cache_policy="LRU",log_path="",
                               cold_start_correction=False,
-                              first_touch_scale=1.0):
+                              first_touch_scale=1.0,
+                              epsilons=None):
     data = f"{DATASETS_DIRECTORY}{data_file}"
     query = f"{DATASETS_DIRECTORY}{query_file}"
     data_arr = np.fromfile(data, dtype=np.uint64)
@@ -958,7 +921,11 @@ def getExpectedCostPerEpsilon(ipp, seg_size, M, n, ps,
     h_list = []
     time_list = []
     least_eps = math.ceil(n*seg_size/(2*M)) if BUDGET_MODE != "RAW" else 2
-    for eps in range(least_eps if (least_eps%2==0) else least_eps+1, 129, 2):     
+    if epsilons is None:
+        eps_iter = range(least_eps if (least_eps%2==0) else least_eps+1, 129, 2)
+    else:
+        eps_iter = [int(eps) for eps in epsilons if int(eps) >= least_eps]
+    for eps in eps_iter:
         t1 = time.time()
         cost,h = cost_function(
             eps, n, seg_size, M, ipp, ps,

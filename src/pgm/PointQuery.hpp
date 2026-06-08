@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -20,6 +21,9 @@ struct PointQueryMetrics {
     size_t disk_pages_read = 0;
     uint64_t bytes_read = 0;
     long long io_ns = 0;
+    long long index_traversal_ns = 0;
+    long long fetch_wall_ns = 0;
+    long long lastmile_search_ns = 0;
 };
 
 struct PointQueryResult {
@@ -85,6 +89,11 @@ inline PointQueryMetrics diff_metrics(
     metrics.bytes_read = after.bytes_read - before.bytes_read;
     metrics.io_ns = after.io_ns - before.io_ns;
     return metrics;
+}
+
+template <typename TimePointT>
+inline long long elapsed_ns(TimePointT begin, TimePointT end) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count();
 }
 
 template <typename IndexT>
@@ -175,6 +184,153 @@ PointQueryResult run_point_query(
         default:
             throw std::invalid_argument("unsupported search strategy");
     }
+}
+
+template <typename IndexT>
+PointQueryResult run_query_all_at_once_breakdown(
+    const IndexT& index,
+    cam::storage::DiskManager& disk,
+    KeyType key,
+    std::vector<Page>& pages)
+{
+    PointQueryResult result;
+    const auto record_key = [](const Record& record) { return record.key; };
+
+    const auto before = disk.stats();
+    const auto index_t0 = std::chrono::steady_clock::now();
+    auto [page_lo, page_hi] = index.estimate_pages_for_key(key);
+    const auto index_t1 = std::chrono::steady_clock::now();
+
+    const auto fetch_t0 = std::chrono::steady_clock::now();
+    disk.fetch_window_into(page_lo, page_hi, pages);
+    const auto fetch_t1 = std::chrono::steady_clock::now();
+    const auto after = disk.stats();
+
+    result.metrics = diff_metrics(before, after);
+    result.metrics.index_traversal_ns = elapsed_ns(index_t0, index_t1);
+    result.metrics.fetch_wall_ns = elapsed_ns(fetch_t0, fetch_t1);
+
+    const auto search_t0 = std::chrono::steady_clock::now();
+    for (const auto& page : pages) {
+        if (!page.data || page.valid_len < sizeof(Record)) {
+            continue;
+        }
+        const auto [first_key, last_key] = cam::storage::page_bounds<Record>(page, record_key);
+        if (key < first_key || key > last_key) {
+            continue;
+        }
+        if (cam::storage::page_binary_contains<Record>(page, key, record_key)) {
+            result.found = true;
+            result.matched_key = key;
+            break;
+        }
+    }
+    const auto search_t1 = std::chrono::steady_clock::now();
+    result.metrics.lastmile_search_ns = elapsed_ns(search_t0, search_t1);
+    return result;
+}
+
+template <typename IndexT>
+PointQueryResult run_query_all_at_once_breakdown(
+    const IndexT& index,
+    cam::storage::DiskManager& disk,
+    KeyType key)
+{
+    std::vector<Page> pages;
+    return run_query_all_at_once_breakdown(index, disk, key, pages);
+}
+
+template <typename IndexT>
+PointQueryResult run_query_one_by_one_breakdown(
+    const IndexT& index,
+    cam::storage::DiskManager& disk,
+    KeyType key)
+{
+    PointQueryResult result;
+    const auto record_key = [](const Record& record) { return record.key; };
+
+    const auto before = disk.stats();
+    const auto index_t0 = std::chrono::steady_clock::now();
+    auto [page_lo, page_hi] = index.estimate_pages_for_key(key);
+    const auto index_t1 = std::chrono::steady_clock::now();
+    result.metrics.index_traversal_ns = elapsed_ns(index_t0, index_t1);
+
+    for (size_t page_idx = page_lo; page_idx <= page_hi; ++page_idx) {
+        const auto fetch_t0 = std::chrono::steady_clock::now();
+        const Page page = disk.fetch(page_idx);
+        const auto fetch_t1 = std::chrono::steady_clock::now();
+        result.metrics.fetch_wall_ns += elapsed_ns(fetch_t0, fetch_t1);
+
+        const auto search_t0 = std::chrono::steady_clock::now();
+        if (!page.data || page.valid_len < sizeof(Record)) {
+            const auto search_t1 = std::chrono::steady_clock::now();
+            result.metrics.lastmile_search_ns += elapsed_ns(search_t0, search_t1);
+            continue;
+        }
+
+        const auto [first_key, last_key] = cam::storage::page_bounds<Record>(page, record_key);
+        if (key < first_key) {
+            const auto search_t1 = std::chrono::steady_clock::now();
+            result.metrics.lastmile_search_ns += elapsed_ns(search_t0, search_t1);
+            break;
+        }
+        if (key > last_key) {
+            const auto search_t1 = std::chrono::steady_clock::now();
+            result.metrics.lastmile_search_ns += elapsed_ns(search_t0, search_t1);
+            if (page_idx == page_hi) {
+                break;
+            }
+            continue;
+        }
+
+        result.found = cam::storage::page_binary_contains<Record>(page, key, record_key);
+        if (result.found) {
+            result.matched_key = key;
+        }
+        const auto search_t1 = std::chrono::steady_clock::now();
+        result.metrics.lastmile_search_ns += elapsed_ns(search_t0, search_t1);
+        break;
+    }
+
+    const auto after = disk.stats();
+    const auto disk_metrics = diff_metrics(before, after);
+    result.metrics.dac = disk_metrics.dac;
+    result.metrics.buffer_hits = disk_metrics.buffer_hits;
+    result.metrics.cam_io = disk_metrics.cam_io;
+    result.metrics.device_ios = disk_metrics.device_ios;
+    result.metrics.disk_pages_read = disk_metrics.disk_pages_read;
+    result.metrics.bytes_read = disk_metrics.bytes_read;
+    result.metrics.io_ns = disk_metrics.io_ns;
+    return result;
+}
+
+template <typename IndexT>
+PointQueryResult run_point_query_breakdown(
+    const IndexT& index,
+    cam::storage::DiskManager& disk,
+    KeyType key,
+    SearchStrategy strategy,
+    std::vector<Page>& pages)
+{
+    switch (strategy) {
+        case ALL_IN_ONCE:
+            return run_query_all_at_once_breakdown(index, disk, key, pages);
+        case ONE_BY_ONE:
+            return run_query_one_by_one_breakdown(index, disk, key);
+        default:
+            throw std::invalid_argument("unsupported search strategy");
+    }
+}
+
+template <typename IndexT>
+PointQueryResult run_point_query_breakdown(
+    const IndexT& index,
+    cam::storage::DiskManager& disk,
+    KeyType key,
+    SearchStrategy strategy)
+{
+    std::vector<Page> pages;
+    return run_point_query_breakdown(index, disk, key, strategy, pages);
 }
 
 } // namespace cam::point_query

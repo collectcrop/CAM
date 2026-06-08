@@ -252,7 +252,6 @@ def join_partition(
     K_max: int = 1024,
     gamma: float = 0.05,      # hysteresis margin: require range <= (1-gamma)*point
     phi: float = 0.0,         # absolute gain threshold in seconds (optional)
-    cooldown: int = 0,        # optional: after a range cut, force next partition to accumulate >=cooldown queries
     lengths_file: str = "",
     bitmap_file: str = "",
 ):
@@ -283,7 +282,6 @@ def join_partition(
     lengths, bitmap = [], []
 
     i = 0
-    cool_left = 0  # cooldown counter
 
     while i < Q:
         N = 0
@@ -320,8 +318,7 @@ def join_partition(
                         union_len += (rj - curR)
                         curR = rj
 
-            # enforce cooldown: do not allow early range cut right after a range partition
-            eligible = (N >= N_min) and (cool_left <= 0)
+            eligible = N >= N_min
 
             # hard cut by K_max once eligible (or always, if you prefer)
             if eligible and K >= K_max:
@@ -360,12 +357,6 @@ def join_partition(
 
         bitmap.append(1 if use_range else 0)
         lengths.append(part_len)
-
-        # update cooldown
-        if use_range and cooldown > 0:
-            cool_left = cooldown
-        else:
-            cool_left = max(0, cool_left - part_len)
 
         i = j + 1
 

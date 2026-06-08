@@ -27,6 +27,7 @@ struct Config {
     std::string query_path;
     size_t total_keys = 0;
     size_t M = 64ULL << 20;
+    std::vector<size_t> epsilons = {4, 8, 10, 12, 14, 16, 18, 20, 24, 32, 64, 128};
     std::vector<SearchStrategy> strategies = {ALL_IN_ONCE};
 };
 
@@ -53,9 +54,28 @@ struct RunResult {
 [[noreturn]] void usage_error(const std::string& msg) {
     throw std::invalid_argument(
         msg + "\nUsage: ./pgm_bench --data <file> --queries <file> [--keys <n>] [--M <MiB>]"
-              " [--strategies <all_in_once,one_by_one|all>]");
+              " [--epsilons <e1,e2,...>] [--strategies <all_in_once,one_by_one|all>]");
 }
 
+std::vector<size_t> parse_size_list(const std::string& value) {
+    std::vector<size_t> out;
+    std::stringstream ss(value);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        token = cam::storage::trim(token);
+        if (token.empty()) {
+            continue;
+        }
+        const size_t parsed = std::stoull(token);
+        if (std::find(out.begin(), out.end(), parsed) == out.end()) {
+            out.push_back(parsed);
+        }
+    }
+    if (out.empty()) {
+        throw std::invalid_argument("empty epsilon list");
+    }
+    return out;
+}
 
 Config parse_args(int argc, char** argv) {
     Config cfg;
@@ -74,6 +94,8 @@ Config parse_args(int argc, char** argv) {
             cfg.total_keys = std::stoull(require_value("--keys"));
         } else if (arg == "--M") {
             cfg.M = std::stoull(require_value("--M")) << 20;
+        } else if (arg == "--epsilons") {
+            cfg.epsilons = parse_size_list(require_value("--epsilons"));
         } else if (arg == "--strategies") {
             cfg.strategies = cam::point_query::parse_search_strategy_list(require_value("--strategies"));
         } else if (arg == "-h" || arg == "--help") {
@@ -196,6 +218,36 @@ void run_epsilon(
     }
 }
 
+void run_epsilon_value(
+    size_t epsilon,
+    const cam::storage::KeyFileLayout& data_layout,
+    const std::vector<KeyType>& data,
+    const std::vector<KeyType>& queries,
+    const Config& cfg)
+{
+    switch (epsilon) {
+        case 4: run_epsilon<4>(data_layout, data, queries, cfg); break;
+        case 8: run_epsilon<8>(data_layout, data, queries, cfg); break;
+        case 10: run_epsilon<10>(data_layout, data, queries, cfg); break;
+        case 12: run_epsilon<12>(data_layout, data, queries, cfg); break;
+        case 14: run_epsilon<14>(data_layout, data, queries, cfg); break;
+        case 16: run_epsilon<16>(data_layout, data, queries, cfg); break;
+        case 18: run_epsilon<18>(data_layout, data, queries, cfg); break;
+        case 20: run_epsilon<20>(data_layout, data, queries, cfg); break;
+        case 24: run_epsilon<24>(data_layout, data, queries, cfg); break;
+        case 28: run_epsilon<28>(data_layout, data, queries, cfg); break;
+        case 32: run_epsilon<32>(data_layout, data, queries, cfg); break;
+        case 36: run_epsilon<36>(data_layout, data, queries, cfg); break;
+        case 40: run_epsilon<40>(data_layout, data, queries, cfg); break;
+        case 52: run_epsilon<52>(data_layout, data, queries, cfg); break;
+        case 64: run_epsilon<64>(data_layout, data, queries, cfg); break;
+        case 96: run_epsilon<96>(data_layout, data, queries, cfg); break;
+        case 128: run_epsilon<128>(data_layout, data, queries, cfg); break;
+        default:
+            throw std::invalid_argument("unsupported epsilon for pgm_bench: " + std::to_string(epsilon));
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -207,17 +259,9 @@ int main(int argc, char** argv) {
         auto queries = load_queries_pgm_safe<KeyType>(cfg.query_path);
 
         print_header();
-        run_epsilon<4>(data_layout, data, queries, cfg);
-        run_epsilon<8>(data_layout, data, queries, cfg);
-        run_epsilon<10>(data_layout, data, queries, cfg);
-        run_epsilon<12>(data_layout, data, queries, cfg);
-        run_epsilon<14>(data_layout, data, queries, cfg);
-        run_epsilon<16>(data_layout, data, queries, cfg);
-        run_epsilon<20>(data_layout, data, queries, cfg);
-        run_epsilon<24>(data_layout, data, queries, cfg);
-        run_epsilon<32>(data_layout, data, queries, cfg);
-        run_epsilon<64>(data_layout, data, queries, cfg);
-        run_epsilon<128>(data_layout, data, queries, cfg);
+        for (size_t epsilon : cfg.epsilons) {
+            run_epsilon_value(epsilon, data_layout, data, queries, cfg);
+        }
 
         return 0;
     } catch (const std::exception& e) {

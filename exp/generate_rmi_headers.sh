@@ -41,6 +41,7 @@ QUERY_LIMIT="${QUERY_LIMIT:-0}"
 BUILD_RMI_BENCH="${BUILD_RMI_BENCH:-1}"
 BUILD_JOBS="${BUILD_JOBS:-$(nproc 2>/dev/null || printf '4')}"
 DRY_RUN="${DRY_RUN:-0}"
+ALLOW_RMI_DATASET_MISMATCH="${ALLOW_RMI_DATASET_MISMATCH:-0}"
 
 abspath() {
   case "$1" in
@@ -51,6 +52,51 @@ abspath() {
 
 model_tag() {
   printf '%s' "$1" | sed 's/[,-]/_/g'
+}
+
+dataset_token_from_path() {
+  local base token
+  base="$(basename "$1")"
+  base="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+  token="${base%%_*}"
+  printf '%s\n' "$token"
+}
+
+namespace_token() {
+  local prefix
+  prefix="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  prefix="${prefix%_rmi}"
+  printf '%s\n' "${prefix%%_*}"
+}
+
+is_guarded_dataset_token() {
+  case "$1" in
+    books|fb) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_namespace_matches_training_data() {
+  local ns_token train_token
+  ns_token="$(namespace_token "$NAMESPACE_PREFIX")"
+  train_token="$(dataset_token_from_path "$TRAIN_DATA_PATH")"
+
+  if [ "$ns_token" = "$train_token" ]; then
+    return 0
+  fi
+  if ! is_guarded_dataset_token "$ns_token" && ! is_guarded_dataset_token "$train_token"; then
+    return 0
+  fi
+  if [ "$ALLOW_RMI_DATASET_MISMATCH" = "1" ]; then
+    echo "[warn] allowing RMI namespace/training-data token mismatch: prefix=$NAMESPACE_PREFIX train=$TRAIN_DATA_PATH" >&2
+    return 0
+  fi
+
+  echo "[error] RMI namespace prefix and training data look inconsistent." >&2
+  echo "        NAMESPACE_PREFIX=$NAMESPACE_PREFIX (token=$ns_token)" >&2
+  echo "        TRAIN_DATA_PATH=$TRAIN_DATA_PATH (token=$train_token)" >&2
+  echo "        Set both values for the same dataset, or set ALLOW_RMI_DATASET_MISMATCH=1 to override." >&2
+  exit 1
 }
 
 run_cmd() {
@@ -75,6 +121,47 @@ write_wrapper() {
     printf '#include "%s.h"\n' "$namespace"
     printf 'namespace rmi_ns = %s;\n' "$namespace"
   } > "$wrapper"
+}
+
+write_artifact_meta() {
+  local namespace="$1"
+  local branch_factor="$2"
+  local train_size train_mtime train_real collect_real generated_meta data_meta
+
+  generated_meta="$GENERATED_DIR_ABS/$namespace.meta"
+  data_meta="$RMI_DATA_DIR_ABS/$namespace.meta"
+  echo "[meta] $generated_meta"
+  if [ "$DRY_RUN" = "1" ]; then
+    return 0
+  fi
+
+  train_size="$(stat -c '%s' "$TRAIN_DATA_ABS" 2>/dev/null || printf '')"
+  train_mtime="$(stat -c '%Y' "$TRAIN_DATA_ABS" 2>/dev/null || printf '')"
+  train_real="$(readlink -f "$TRAIN_DATA_ABS" 2>/dev/null || printf '%s' "$TRAIN_DATA_ABS")"
+  collect_real="$(readlink -f "$COLLECT_DATA_ABS" 2>/dev/null || printf '%s' "$COLLECT_DATA_ABS")"
+
+  {
+    printf 'artifact_format_version=1\n'
+    printf 'namespace=%s\n' "$namespace"
+    printf 'namespace_prefix=%s\n' "$NAMESPACE_PREFIX"
+    printf 'namespace_token=%s\n' "$(namespace_token "$NAMESPACE_PREFIX")"
+    printf 'models=%s\n' "$MODELS"
+    printf 'model_tag=%s\n' "$(model_tag "$MODELS")"
+    printf 'branch_factor=%s\n' "$branch_factor"
+    printf 'train_data_path=%s\n' "$TRAIN_DATA_ABS"
+    printf 'train_data_realpath=%s\n' "$train_real"
+    printf 'train_data_token=%s\n' "$(dataset_token_from_path "$TRAIN_DATA_PATH")"
+    printf 'train_data_size_bytes=%s\n' "$train_size"
+    printf 'train_data_mtime_epoch=%s\n' "$train_mtime"
+    printf 'collect_data_path=%s\n' "$COLLECT_DATA_ABS"
+    printf 'collect_data_realpath=%s\n' "$collect_real"
+    printf 'collect_data_header=%s\n' "$COLLECT_DATA_HEADER"
+    printf 'query_path=%s\n' "$QUERY_ABS"
+    printf 'rmi_data_dir=%s\n' "$RMI_DATA_DIR_ABS"
+    printf 'generated_dir=%s\n' "$GENERATED_DIR_ABS"
+    printf 'generated_at_epoch=%s\n' "$(date +%s)"
+  } > "$generated_meta"
+  cp "$generated_meta" "$data_meta"
 }
 
 train_one_rmi() {
@@ -115,6 +202,7 @@ train_one_rmi() {
     fi
     run_cmd mv "$src" "$dst"
   done
+  write_artifact_meta "$namespace" "$branch_factor"
 
   if [ "$COLLECT_RECORDS" = "1" ]; then
     write_wrapper "$namespace"
@@ -171,10 +259,13 @@ echo "[config] MODELS=$MODELS"
 echo "[config] BF_LIST=$BF_LIST"
 echo "[config] COLLECT_RECORDS=$COLLECT_RECORDS"
 echo "[config] BUILD_RMI_BENCH=$BUILD_RMI_BENCH"
+echo "[config] ALLOW_RMI_DATASET_MISMATCH=$ALLOW_RMI_DATASET_MISMATCH"
 
 if [ "$DRY_RUN" != "1" ]; then
   mkdir -p "$GENERATED_DIR_ABS" "$RESULTS_DIR_ABS" "$RMI_DATA_DIR_ABS"
 fi
+
+validate_namespace_matches_training_data
 
 for BF in $BF_LIST; do
   train_one_rmi "$BF"

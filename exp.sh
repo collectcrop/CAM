@@ -172,12 +172,16 @@
 #   --methods CAM replay lpm \
 #   --metric q_error
 
-  python3 exp/extract_cmp_summary_table.py \
-  --root build/log/range_cmp \
-  --kind range \
-  --workloads w1 w2 w4 w6 \
-  --datasets books fb osm wiki \
-  --rates 10 30 50 100 \
-  --M 128 \
-  --methods CAM replay lpm \
-  --metric q_error
+  # python3 exp/extract_cmp_summary_table.py \
+  # --root build/log/range_cmp \
+  # --kind range \
+  # --workloads w1 w2 w4 w6 \
+  # --datasets books fb osm wiki \
+  # --rates 10 30 50 100 \
+  # --M 128 \
+  # --methods CAM replay lpm \
+  # --metric q_error
+
+# TRAIN_DATA_PATH=src/rmi/dataset/fb_200M_uint64_unique_fixed QUERY_PATH=/mnt/data/Dataset/public/SOSD/fb_200M_uint64_unique.query.bin NAMESPACE_PREFIX=fb_rmi exp/generate_rmi_headers.sh
+# TRAIN_DATA_PATH=src/rmi/dataset/osm_cellids_200M_uint64_unique_fixed QUERY_PATH=/mnt/data/Dataset/public/SOSD/osm_cellids_200M_uint64_unique.query.bin NAMESPACE_PREFIX=osm_cellids_rmi exp/generate_rmi_headers.sh
+# TRAIN_DATA_PATH=src/rmi/dataset/wiki_ts_200M_uint64_unique_fixed QUERY_PATH=/mnt/data/Dataset/public/SOSD/wiki_ts_200M_uint64_unique.query.bin NAMESPACE_PREFIX=wiki_ts_rmi exp/generate_rmi_headers.sh

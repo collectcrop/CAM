@@ -20,7 +20,6 @@ SEED="${SEED:-42}"
 
 N_MIN="${N_MIN:-${WINDOW_SIZE:-1024}}"
 K_MAX="${K_MAX:-8192}"
-COOLDOWN="${COOLDOWN:-0}"
 PAGE_SIZE="${PAGE_SIZE:-4096}"
 KEY_SIZE="${KEY_SIZE:-8}"
 EPSILON="${EPSILON:-16}"
@@ -44,7 +43,7 @@ STRICT="${STRICT:-true}"
 
 "$PYTHON_BIN" - \
   "$DATASETS_DIRECTORY" "$DATASET" "$QUERY_TAG" "$NUM_QUERIES" "$SEED" \
-  "$N_MIN" "$K_MAX" "$COOLDOWN" "$PAGE_SIZE" "$KEY_SIZE" "$EPSILON" "$GAMMA" "$PHI" \
+  "$N_MIN" "$K_MAX" "$PAGE_SIZE" "$KEY_SIZE" "$EPSILON" "$GAMMA" "$PHI" \
   "$ALPHA" "$BETA" "$ETA" "$DELTA" "$LAMBDA_POINT" "$LAMBDA_RANGE" \
   "$NUM_HOTSPOTS" "$HOTSPOT_FRAC" "$HOTSPOT_ZIPF_A" "$ZIPF_A" \
   "$OVERSAMPLE" "$MIN_CANDIDATES" "$STRICT" <<'PY'
@@ -64,7 +63,6 @@ from generate_query import join_partition, sample_unique_mixture
     seed_s,
     n_min_s,
     k_max_s,
-    cooldown_s,
     page_size_s,
     key_size_s,
     epsilon_s,
@@ -94,7 +92,6 @@ num_queries = int(num_queries_s)
 seed = int(seed_s)
 n_min = int(n_min_s)
 k_max = int(k_max_s)
-cooldown = int(cooldown_s)
 page_size = int(page_size_s)
 key_size = int(key_size_s)
 epsilon = int(epsilon_s)
@@ -131,7 +128,7 @@ workloads = [
 ]
 
 print(f"[*] dataset={data_path} keys={n}")
-print(f"[*] num_queries={num_queries} n_min={n_min} k_max={k_max} cooldown={cooldown}")
+print(f"[*] num_queries={num_queries} n_min={n_min} k_max={k_max}")
 print(f"[*] sample_unique_mixture oversample={oversample} min_candidates={min_candidates} strict={strict}")
 print(
     "[*] model "
@@ -140,6 +137,8 @@ print(
 )
 
 for table_id, (name, hot_ratio, zipf_ratio, uniform_ratio) in enumerate(workloads, start=1):
+    # if name in ["w3","w2","w4","w5"]:
+    #     continue
     query_path = data_dir / f"{dataset}.{query_tag}table{table_id}.bin"
     lengths_file = data_dir / f"{dataset}.{query_tag}table{table_id}.par"
     bitmap_file = data_dir / f"{dataset}.{query_tag}table{table_id}.bitmap"
@@ -183,7 +182,6 @@ for table_id, (name, hot_ratio, zipf_ratio, uniform_ratio) in enumerate(workload
         K_max=k_max,
         gamma=gamma,
         phi=phi,
-        cooldown=cooldown,
         lengths_file=str(lengths_file),
         bitmap_file=str(bitmap_file),
     )

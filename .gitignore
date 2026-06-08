@@ -8,3 +8,5 @@ visualize
 __pycache__/
 src/rmi/dataset/
 src/rmi/rmi_data/
+src/rmi/rmi_eval/generated/
+src/rmi/rmi_eval/results/

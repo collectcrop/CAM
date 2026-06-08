@@ -72,6 +72,10 @@ add_executable(rmi_bench
     src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2097152.cpp
 )
 
+add_executable(motivation_query_breakdown
+    exp/motivation_query_breakdown.cpp
+)
+
 add_executable(pgm_join_fit
     exp/pgm_join_fit.cpp
 )
@@ -119,6 +123,12 @@ target_include_directories(pgm_range_cache_simulate
 )
 
 target_include_directories(rmi_bench
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/rmi/rmi_eval/generated
+)
+
+target_include_directories(motivation_query_breakdown
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/rmi/rmi_eval/generated
@@ -180,6 +190,11 @@ target_link_libraries(rmi_bench
         cam_cache
 )
 
+target_link_libraries(motivation_query_breakdown
+    PRIVATE
+        cam_cache
+)
+
 target_link_libraries(pgm_join_fit
     PRIVATE
         cam_cache
@@ -220,6 +235,9 @@ if(CAM_ENABLE_WARNINGS)
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
     )
     target_compile_options(rmi_bench PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
+    )
+    target_compile_options(motivation_query_breakdown PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic>
     )
     target_compile_options(pgm_join_fit PRIVATE
