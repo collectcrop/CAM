@@ -6,6 +6,10 @@ set -euo pipefail
 #   point : externally sort the workload, then probe every key through the point query interface
 #   range : externally sort the workload, then use one range probe from min(workload) to max(workload)
 #   inlj  : unsorted workload point lookup baseline
+#
+# QUERY_TAG=1M is about 8 MiB of uint64 keys. Keep SORT_MEMORY_MIB below
+# that size (for example 0.5 or 1) if you want a real external-sort path
+# instead of one in-memory initial run.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -23,7 +27,7 @@ WORK_DIR="${WORK_DIR:-build/tmp/hybrid_join_sort}"
 NUM_KEYS="${NUM_KEYS:-200000000}"
 EPSILON="${EPSILON:-16}"
 MEMORY_MIB="${MEMORY_MIB:-16}"
-SORT_MEMORY_MIB="${SORT_MEMORY_MIB:-16}"
+SORT_MEMORY_MIB="${SORT_MEMORY_MIB:-0.5}"
 POLICY="${POLICY:-LRU}"
 
 mkdir -p "$(dirname "$OUT_CSV")"

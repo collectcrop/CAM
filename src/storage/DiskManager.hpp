@@ -27,6 +27,7 @@ struct DiskStats {
     uint64_t physical_read_ops = 0;
     uint64_t bytes_read = 0;
     long long io_ns = 0;
+    long long cache_ns = 0;
     bool useDirect = false;
 };
 
@@ -116,7 +117,11 @@ public:
                 const size_t slot = run_start + i;
                 const size_t page_idx = page_lo + slot;
                 pages[slot] = fetched[i];
+                const auto cache_t0 = std::chrono::steady_clock::now();
                 cache_->put(page_idx, Page{pages[slot].data, pages[slot].valid_len});
+                const auto cache_t1 = std::chrono::steady_clock::now();
+                stats_.cache_ns +=
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(cache_t1 - cache_t0).count();
             }
             run_len = 0;
         };
@@ -126,7 +131,12 @@ public:
             ++stats_.page_requests;
 
             Page cached;
-            if (cache_->get(page_idx, cached)) {
+            const auto cache_t0 = std::chrono::steady_clock::now();
+            const bool hit = cache_->get(page_idx, cached);
+            const auto cache_t1 = std::chrono::steady_clock::now();
+            stats_.cache_ns +=
+                std::chrono::duration_cast<std::chrono::nanoseconds>(cache_t1 - cache_t0).count();
+            if (hit) {
                 ++stats_.cache_hits;
                 flush_run();
                 pages[i] = std::move(cached);

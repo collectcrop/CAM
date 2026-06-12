@@ -75,6 +75,8 @@ struct Config {
     std::string summary_out;
     size_t total_keys = 0;
     size_t query_limit = 0;
+    size_t cache_bytes = 128ull * 1024ull * 1024ull;
+    CachePolicy cache_policy = CachePolicy::LRU;
     bool append = false;
     bool direct_io = false;
     cam::storage::HeaderMode header_mode = cam::storage::HeaderMode::AUTO;
@@ -95,6 +97,8 @@ struct BreakdownResult {
     size_t index_bytes = 0;
     uint64_t build_time_ns = 0;
     SearchStrategy strategy = ALL_IN_ONCE;
+    CachePolicy cache_policy = CachePolicy::LRU;
+    size_t cache_bytes = 0;
 
     size_t queries = 0;
     size_t found = 0;
@@ -117,6 +121,7 @@ struct BreakdownResult {
     uint64_t io_size_max_bytes = 0;
 
     long long index_traversal_ns = 0;
+    long long cache_ns = 0;
     long long io_ns = 0;
     long long fetch_wall_ns = 0;
     long long lastmile_search_ns = 0;
@@ -155,6 +160,7 @@ std::string supported_rmi_list() {
         " [--rmi-prefix <prefix>] [--rmi-model-tag <tag>]"
         " [--rmi-data-dir <dir>] [--rmi-generated-dir <dir>]"
         " [--strategies <all_in_once,one_by_one|all>]"
+        " [--cache-policy <none|fifo|lru|lfu>] [--cache-bytes <n>]"
         " [--io-mode <buffered|direct>|--direct-io]"
         " [--query-limit <n>] [--summary-out <csv>] [--append]");
 }
@@ -304,6 +310,10 @@ Config parse_args(int argc, char** argv) {
             cfg.rmi_data_dir = resolve_local_path(require_value("--rmi-data-dir"));
         } else if (arg == "--rmi-generated-dir") {
             cfg.rmi_generated_dir = resolve_local_path(require_value("--rmi-generated-dir"));
+        } else if (arg == "--cache-policy") {
+            cfg.cache_policy = cam::cache::parse_policy_token(require_value("--cache-policy"));
+        } else if (arg == "--cache-bytes") {
+            cfg.cache_bytes = std::stoull(require_value("--cache-bytes"));
         } else if (arg == "--direct-io") {
             cfg.direct_io = true;
         } else if (arg == "--io-mode") {
@@ -395,15 +405,19 @@ BreakdownResult run_breakdown_queries(
     const cam::storage::KeyFileLayout& data_layout,
     const std::vector<KeyType>& queries,
     SearchStrategy strategy,
-    bool direct_io)
+    bool direct_io,
+    CachePolicy cache_policy,
+    size_t cache_bytes)
 {
     BreakdownResult st;
     st.strategy = strategy;
+    st.cache_policy = cache_policy;
+    st.cache_bytes = cache_bytes;
     st.queries = queries.size();
 
     cam::storage::DiskManager disk(
         data_layout,
-        cam::storage::make_page_cache(CachePolicy::NONE, 0),
+        cam::storage::make_page_cache(cache_policy, cache_bytes),
         direct_io);
 
     std::vector<Page> scratch_pages;
@@ -421,6 +435,7 @@ BreakdownResult run_breakdown_queries(
         st.bytes_read += result.metrics.bytes_read;
         io_sizes.push_back(result.metrics.bytes_read);
         st.index_traversal_ns += result.metrics.index_traversal_ns;
+        st.cache_ns += result.metrics.cache_ns;
         st.io_ns += result.metrics.io_ns;
         st.fetch_wall_ns += result.metrics.fetch_wall_ns;
         st.lastmile_search_ns += result.metrics.lastmile_search_ns;
@@ -569,13 +584,13 @@ private:
 void print_header(std::ostream& out) {
     out
         << "label,baseline,io_mode,index_type,model,epsilon,branch_factor,index_bytes,build_time_ns,"
-        << "policy,strategy,queries,found,page_requests,cache_hits,cache_misses,"
+        << "policy,cache_bytes,strategy,queries,found,page_requests,cache_hits,cache_misses,"
         << "logical_ios,physical_ios,avg_logical_ios,avg_physical_ios,bytes_read,"
         << "io_size_mean_bytes,io_size_std_bytes,io_size_min_bytes,"
         << "io_size_p50_bytes,io_size_p75_bytes,io_size_p90_bytes,"
         << "io_size_p95_bytes,io_size_p99_bytes,io_size_max_bytes,"
-        << "index_traversal_ns,io_ns,fetch_wall_ns,lastmile_search_ns,wall_ns,other_ns,"
-        << "avg_index_traversal_ns,avg_io_ns,avg_fetch_wall_ns,avg_lastmile_search_ns,"
+        << "index_traversal_ns,cache_ns,io_ns,fetch_wall_ns,lastmile_search_ns,wall_ns,other_ns,"
+        << "avg_index_traversal_ns,avg_cache_ns,avg_io_ns,avg_fetch_wall_ns,avg_lastmile_search_ns,"
         << "avg_wall_ns,throughput_qps,checksum\n";
 }
 
@@ -584,12 +599,14 @@ void print_row(std::ostream& out, const BreakdownResult& st) {
     const double avg_lio = st.queries ? static_cast<double>(st.logical_ios) / queries : 0.0;
     const double avg_pio = st.queries ? static_cast<double>(st.physical_ios) / queries : 0.0;
     const double avg_index_ns = st.queries ? static_cast<double>(st.index_traversal_ns) / queries : 0.0;
+    const double avg_cache_ns = st.queries ? static_cast<double>(st.cache_ns) / queries : 0.0;
     const double avg_io_ns = st.queries ? static_cast<double>(st.io_ns) / queries : 0.0;
     const double avg_fetch_ns = st.queries ? static_cast<double>(st.fetch_wall_ns) / queries : 0.0;
     const double avg_lastmile_ns = st.queries ? static_cast<double>(st.lastmile_search_ns) / queries : 0.0;
     const double avg_wall_ns = st.queries ? static_cast<double>(st.wall_ns) / queries : 0.0;
     const double qps = st.wall_ns ? queries * 1e9 / static_cast<double>(st.wall_ns) : 0.0;
-    const long long accounted_ns = st.index_traversal_ns + st.io_ns + st.lastmile_search_ns;
+    const long long accounted_ns =
+        st.index_traversal_ns + st.cache_ns + st.io_ns + st.lastmile_search_ns;
     const long long other_ns = st.wall_ns > accounted_ns ? st.wall_ns - accounted_ns : 0;
 
     out
@@ -602,7 +619,8 @@ void print_row(std::ostream& out, const BreakdownResult& st) {
         << st.branch_factor << ','
         << st.index_bytes << ','
         << st.build_time_ns << ','
-        << cam::cache::policy_name(CachePolicy::NONE) << ','
+        << cam::cache::policy_name(st.cache_policy) << ','
+        << st.cache_bytes << ','
         << cam::point_query::search_strategy_name(st.strategy) << ','
         << st.queries << ','
         << st.found << ','
@@ -624,12 +642,14 @@ void print_row(std::ostream& out, const BreakdownResult& st) {
         << st.io_size_p99_bytes << ','
         << st.io_size_max_bytes << ','
         << st.index_traversal_ns << ','
+        << st.cache_ns << ','
         << st.io_ns << ','
         << st.fetch_wall_ns << ','
         << st.lastmile_search_ns << ','
         << st.wall_ns << ','
         << other_ns << ','
         << std::fixed << std::setprecision(2) << avg_index_ns << ','
+        << std::fixed << std::setprecision(2) << avg_cache_ns << ','
         << std::fixed << std::setprecision(2) << avg_io_ns << ','
         << std::fixed << std::setprecision(2) << avg_fetch_ns << ','
         << std::fixed << std::setprecision(2) << avg_lastmile_ns << ','
@@ -656,7 +676,14 @@ void run_pgm_epsilon(
     const size_t index_bytes = index.size_in_bytes();
 
     for (SearchStrategy strategy : cfg.strategies) {
-        auto st = run_breakdown_queries(index, data_layout, queries, strategy, cfg.direct_io);
+        auto st = run_breakdown_queries(
+            index,
+            data_layout,
+            queries,
+            strategy,
+            cfg.direct_io,
+            cfg.cache_policy,
+            cfg.cache_bytes);
         st.label = cfg.label;
         st.baseline = cfg.direct_io ? "PGM-DIRECT" : "PGM";
         st.io_mode = cfg.direct_io ? "direct" : "buffered";
@@ -715,7 +742,14 @@ void run_rmi_model(
         data_layout.logical_pages);
     const auto& model = index.spec();
     for (SearchStrategy strategy : cfg.strategies) {
-        auto st = run_breakdown_queries(index, data_layout, queries, strategy, cfg.direct_io);
+        auto st = run_breakdown_queries(
+            index,
+            data_layout,
+            queries,
+            strategy,
+            cfg.direct_io,
+            cfg.cache_policy,
+            cfg.cache_bytes);
         st.label = cfg.label;
         st.baseline = cfg.direct_io ? "RMI-DIRECT" : "RMI";
         st.io_mode = cfg.direct_io ? "direct" : "buffered";

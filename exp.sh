@@ -53,7 +53,7 @@
 #   --bench-csv build/log/rmi/books_10M_M8_rmi_bench.csv \
 #   --output build/log/rmi/books_10M_M8_rmi_io_compare.pdf
 
-# python utils/plot_rmi_io_compare.py \
+# python visualize/plot_rmi_io_compare.py \
 #   --estimate-log \
 #     build/log/rmi/books_10M_M8_rmi_optimalBF_summary.log \
 #     build/log/rmi/books_10M_M16_rmi_optimalBF_summary.log \
@@ -77,13 +77,12 @@
   # --min-bf 64
 
 
-# ~/miniconda3/bin/python utils/plot_epsilon_benchmarks.py \
-#   --estimate-paths build/log/fb_10M_uint64_unique_FIFO.log build/log/fb_10M_uint64_unique_LFU.log build/log/fb_10M_uint64_unique_LRU.log \
-#   --bench-paths build/log/fb_10M_M10_range_bench.csv build/log/fb_10M_M20_range_bench.csv build/log/fb_10M_M40_range_bench.csv build/log/fb_10M_M60_range_bench.csv \
-#   --dataset-filter fb_10M \
-#   --m-values 10 20 40 60 \
-#   --fitcam-root build/log/fitcam_q30 \
-#   --output-dir data/outputs/figures/epsilon_analysis
+~/miniconda3/bin/python visualize/plot_epsilon_benchmarks.py \
+  --estimate-paths build/log/books_200M_uint64_unique_FIFO.log build/log/books_200M_uint64_unique_LFU.log build/log/books_200M_uint64_unique_LRU.log \
+  --bench-paths build/log/books_200M_M64_bench.csv build/log/books_200M_M96_bench.csv build/log/books_200M_M128_bench.csv build/log/books_200M_M160_bench.csv \
+  --dataset-filter books_200M \
+  --m-values 64 96 128 160 \
+  --output-dir data/outputs/figures/epsilon_analysis
 
 
 # python utils/plot_epsilon_error_benchmarks.py \
@@ -140,9 +139,12 @@
 #   --data books_200M_uint64_unique \
 #   --queries books_200M_uint64_unique.query.bin \
 #   --keys 200000000 \
-#   --M 8 \
+#   --M 32 \
+#   --cam-size-mode powerlaw \
+#   --cam-size-model-eps 4,8,16,32,64,128 \
 #   --candidate-eps 4-128 \
 #   --cache-ratios 0.25,0.50,0.75 \
+#   --repeats 5 \
 #   --tuner-bin ./build/tuner \
 #   --cam-bin ./build/pgm_cam_covariance
 

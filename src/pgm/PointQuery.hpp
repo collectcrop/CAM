@@ -21,6 +21,7 @@ struct PointQueryMetrics {
     size_t disk_pages_read = 0;
     uint64_t bytes_read = 0;
     long long io_ns = 0;
+    long long cache_ns = 0;
     long long index_traversal_ns = 0;
     long long fetch_wall_ns = 0;
     long long lastmile_search_ns = 0;
@@ -88,6 +89,7 @@ inline PointQueryMetrics diff_metrics(
     metrics.disk_pages_read = after.logical_page_reads - before.logical_page_reads;
     metrics.bytes_read = after.bytes_read - before.bytes_read;
     metrics.io_ns = after.io_ns - before.io_ns;
+    metrics.cache_ns = after.cache_ns - before.cache_ns;
     return metrics;
 }
 
@@ -301,6 +303,7 @@ PointQueryResult run_query_one_by_one_breakdown(
     result.metrics.disk_pages_read = disk_metrics.disk_pages_read;
     result.metrics.bytes_read = disk_metrics.bytes_read;
     result.metrics.io_ns = disk_metrics.io_ns;
+    result.metrics.cache_ns = disk_metrics.cache_ns;
     return result;
 }
 
