@@ -2,18 +2,23 @@ import math
 import numpy as np
 import time
 import os, sys
-from scipy.optimize import brentq  
-from scipy.special import zeta     
+from scipy.optimize import brentq
+from scipy.special import zeta
 from collections import Counter
 from scipy.signal import fftconvolve
 
 try:
-    from .cache_hit_models import cache_hit_ratio as shared_cache_hit_ratio, validate_ratio as shared_validate_ratio, cache_hit_ratio 
+    from .cache_hit_models import cache_hit_ratio as shared_cache_hit_ratio, validate_ratio as shared_validate_ratio, cache_hit_ratio
 except ImportError:
-    from cache_hit_models import cache_hit_ratio as shared_cache_hit_ratio, validate_ratio as shared_validate_ratio, cache_hit_ratio 
+    from cache_hit_models import cache_hit_ratio as shared_cache_hit_ratio, validate_ratio as shared_validate_ratio, cache_hit_ratio
+
+try:
+    from .config import get_datasets_directory
+except ImportError:
+    from config import get_datasets_directory
 
 alpha = 1
-DATASETS_DIRECTORY = "/mnt/data/Dataset/public/SOSD/"
+DATASETS_DIRECTORY = get_datasets_directory()
 LOG_DIRECTORY = "build/log/"
 # BUDGET_MODE = "RAW"
 BUDGET_MODE = "ESTIMATED"

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generate six books_200M join workloads and hybrid partitions.
-# Outputs:
-#   books_200M_uint64_unique.1Mtable1.bin/.par/.bitmap
+# Generate join workloads and hybrid partitions for six workload mixtures (w1-w6).
+# Output files are placed alongside the dataset:
+#   ${DATASET}.${QUERY_TAG}table1.bin/.par/.bitmap
 #   ...
-#   books_200M_uint64_unique.1Mtable6.bin/.par/.bitmap
+#   ${DATASET}.${QUERY_TAG}table6.bin/.par/.bitmap
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
+[ -f config.sh ] && source config.sh
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}"

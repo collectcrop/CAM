@@ -1,7 +1,13 @@
 import numpy as np
 import random
 import math
-DATASETS_DIRECTORY = "/mnt/data/Dataset/public/SOSD/"
+
+try:
+    from .config import get_datasets_directory
+except ImportError:
+    from config import get_datasets_directory
+
+DATASETS_DIRECTORY = get_datasets_directory()
 
 def generate_realistic_queries_from_data(keys, num_queries=100000, seed=42):
     np.random.seed(seed)

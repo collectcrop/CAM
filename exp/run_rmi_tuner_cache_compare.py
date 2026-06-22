@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
             "The remaining memory is the optimizer index-size upper bound."
         ),
     )
-    parser.add_argument("--datasets-directory", default="/mnt/data/Dataset/public/SOSD")
+    parser.add_argument("--datasets-directory", default=os.environ.get("DATASETS_DIRECTORY", "/mnt/data/Dataset/public/SOSD"))
     parser.add_argument("--rmi-bin", default="./build/rmi_bench")
     parser.add_argument("--python-bin", default=default_python_bin())
     parser.add_argument("--rmi-directory", default="src/rmi", help="CDFShop/RMI cargo project directory.")

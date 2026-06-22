@@ -1,10 +1,13 @@
 tmp
 build
+build_bak
 .learnings
 .vscode
 data
 .codex
-visualize
+visualize/*
+!visualize/plot_epsilon_benchmarks.py
+!visualize/plot_motivation_query_breakdown.py
 __pycache__/
 src/rmi/dataset/
 # src/rmi/rmi_data/

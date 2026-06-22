@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Compare three join execution modes over books_200M table workloads:
+# Compare join execution modes over table workloads:
 #   hybrid: use .par/.bitmap, point partitions call point query, range partitions call range query
 #   point : externally sort the workload, then probe every key through the point query interface
 #   range : externally sort the workload, then use one range probe from min(workload) to max(workload)
 #   inlj  : unsorted workload point lookup baseline
+#
+# Prerequisites: generate join workloads first, e.g.:
+#   DATASET=books_200M_uint64_unique bash exp/run_join_workloads.sh
 #
 # QUERY_TAG=1M is about 8 MiB of uint64 keys. Keep SORT_MEMORY_MIB below
 # that size (for example 0.5 or 1) if you want a real external-sort path
@@ -14,6 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
+[ -f config.sh ] && source config.sh
 
 BINARY="${BINARY:-./build/pgm_hybrid_join}"
 DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}"
@@ -21,13 +25,13 @@ DATASET="${DATASET:-books_200M_uint64_unique}"
 QUERY_TAG="${QUERY_TAG:-1M}"
 TABLE_LIST="${TABLE_LIST:-1 2 3 4 5 6}"
 MODE_LIST="${MODE_LIST:-hybrid point range inlj}"
-OUT_CSV="${OUT_CSV:-build/log/hybrid_join/books_200M_join_compare.csv}"
+OUT_CSV="${OUT_CSV:-build/log/hybrid_join/${DATASET}_join_compare.csv}"
 WORK_DIR="${WORK_DIR:-build/tmp/hybrid_join_sort}"
 
 NUM_KEYS="${NUM_KEYS:-200000000}"
 EPSILON="${EPSILON:-16}"
 MEMORY_MIB="${MEMORY_MIB:-16}"
-SORT_MEMORY_MIB="${SORT_MEMORY_MIB:-0.5}"
+SORT_MEMORY_MIB="${SORT_MEMORY_MIB:-16}"
 POLICY="${POLICY:-LRU}"
 
 mkdir -p "$(dirname "$OUT_CSV")"

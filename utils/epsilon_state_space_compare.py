@@ -4,11 +4,12 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 import subprocess
 import time
 from pathlib import Path
 
-DEFAULT_DATASETS_DIRECTORY = "/mnt/data/Dataset/public/SOSD/"
+DEFAULT_DATASETS_DIRECTORY = os.environ.get("DATASETS_DIRECTORY", "/mnt/data/Dataset/public/SOSD")
 
 
 def parse_policy_list(raw: str) -> list[str]:

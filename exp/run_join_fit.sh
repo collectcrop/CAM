@@ -6,6 +6,11 @@ set -euo pipefail
 # Range mode: synthesize single range probes with varied page spans for
 # CPU-side range parameter fitting.
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+[ -f config.sh ] && source config.sh
+
 BINARY="${BINARY:-./build/pgm_join_fit}"
 DATA_DIR="${DATA_DIR:-/mnt/data/Dataset/public/SOSD}"
 OUT_DIR="${OUT_DIR:-build/log/join_fit}"

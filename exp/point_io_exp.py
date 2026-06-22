@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 import time
 from pathlib import Path
 
@@ -690,7 +691,7 @@ def cmd_summarize(args: argparse.Namespace) -> None:
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--datasets-directory", type=Path, default=Path("/mnt/data/Dataset/public/SOSD"))
+    parser.add_argument("--datasets-directory", type=Path, default=Path(os.environ.get("DATASETS_DIRECTORY", "/mnt/data/Dataset/public/SOSD")))
     parser.add_argument(
         "--datasets",
         nargs="+",

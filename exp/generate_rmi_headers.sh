@@ -17,6 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
+[ -f config.sh ] && source config.sh
 
 RMI_REPO="${RMI_REPO:-src/rmi}"
 RMI_EVAL_DIR="${RMI_EVAL_DIR:-src/rmi/rmi_eval}"
@@ -27,7 +28,7 @@ BUILD_DIR="${BUILD_DIR:-build}"
 
 TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-${DATA_PATH:-src/rmi/dataset/books_200M_uint64_unique_fixed}}"
 COLLECT_DATA_PATH="${COLLECT_DATA_PATH:-$TRAIN_DATA_PATH}"
-QUERY_PATH="${QUERY_PATH:-/mnt/data/Dataset/public/SOSD/books_200M_uint64_unique.query.bin}"
+QUERY_PATH="${QUERY_PATH:-${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}/books_200M_uint64_unique.query.bin}"
 COLLECT_DATA_HEADER="${COLLECT_DATA_HEADER:-yes}"
 
 MODELS="${MODELS:-linear_spline,linear}"

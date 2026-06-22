@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
 import re
 import subprocess
 import sys
@@ -35,7 +36,7 @@ def parse_args() -> argparse.Namespace:
         default="0.25,0.50,0.75",
         help="Comma-separated cache fractions for PGM tuner baselines.",
     )
-    parser.add_argument("--datasets-directory", default="/mnt/data/Dataset/public/SOSD")
+    parser.add_argument("--datasets-directory", default=os.environ.get("DATASETS_DIRECTORY", "/mnt/data/Dataset/public/SOSD"))
     parser.add_argument("--cam-bin", default="./build/pgm_cam_covariance")
     parser.add_argument("--index-size-bin", default="./build/pgm_index_sizes")
     parser.add_argument("--tuner-bin", default="./build/tuner")

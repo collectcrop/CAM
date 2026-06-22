@@ -4,8 +4,12 @@ import pandas as pd
 
 from optimalEpsilon import cost_function, range_cost_function
 
-# DATASETS_DIRECTORY = "/mnt/home/zwshi/Datasets/SOSD/"
-DATASETS_DIRECTORY = "/mnt/backup_disk/backup_2025_full/zwshi/Datasets/SOSD/"
+try:
+    from .config import get_datasets_directory
+except ImportError:
+    from config import get_datasets_directory
+
+DATASETS_DIRECTORY = get_datasets_directory()
 REAL_DIRECTORY = "/mnt/home/zwshi/learned-index/cost-model/include/FALCON/results/log/"
 LOG_DIRECTORY = "/mnt/home/zwshi/learned-index/cost-model/visualize/data/log/"
 
