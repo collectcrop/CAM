@@ -13,7 +13,7 @@ cd "$REPO_ROOT"
 [ -f config.sh ] && source config.sh
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}"
+DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-$REPO_ROOT/data/datasets/SOSD}"
 DATASET="${DATASET:-books_200M_uint64_unique}"
 QUERY_TAG="${QUERY_TAG:-1M}"
 NUM_QUERIES="${NUM_QUERIES:-1000000}"

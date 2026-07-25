@@ -14,7 +14,7 @@ cd "$REPO_ROOT"
 
 BINARY="${BINARY:-./build/motivation_query_breakdown}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}"
+DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-$REPO_ROOT/data/datasets/SOSD}"
 DATASET="${DATASET:-osm_cellids_200M_uint64_unique}"
 QUERY_TAG="${QUERY_TAG:-1M}"
 TABLE_LIST="${TABLE_LIST:-1 2 3 4 5 6}"

@@ -1,5 +1,0 @@
-namespace fb_rmi_linear_spline_linear_256 {
-const double L0_PARAMETER0 = -0.000000000000000013823577699190182;
-const double L0_PARAMETER1 = 0.000000000000000013823577699190182;
-char* L1_PARAMETERS;
-} // namespace

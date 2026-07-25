@@ -14,6 +14,8 @@ from pathlib import Path
 
 import numpy as np
 
+DEFAULT_DATASETS_DIRECTORY = Path(__file__).resolve().parents[1] / "data" / "datasets" / "SOSD"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -36,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         default="0.25,0.50,0.75",
         help="Comma-separated cache fractions for PGM tuner baselines.",
     )
-    parser.add_argument("--datasets-directory", default=os.environ.get("DATASETS_DIRECTORY", "/mnt/data/Dataset/public/SOSD"))
+    parser.add_argument("--datasets-directory", default=os.environ.get("DATASETS_DIRECTORY", str(DEFAULT_DATASETS_DIRECTORY)))
     parser.add_argument("--cam-bin", default="./build/pgm_cam_covariance")
     parser.add_argument("--index-size-bin", default="./build/pgm_index_sizes")
     parser.add_argument("--tuner-bin", default="./build/tuner")
@@ -48,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cam-size-mode",
         choices=["estimated", "measured", "powerlaw"],
-        default="estimated",
+        default="powerlaw",
         help=(
             "Index-size mode used while CAM selects epsilon. "
             "'estimated' uses n*seg_size/(2*epsilon) and does not build candidate indexes; "

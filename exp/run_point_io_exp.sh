@@ -6,9 +6,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 [ -f config.sh ] && source config.sh
 
-PYTHON_BIN="${PYTHON_BIN:-$HOME/miniconda3/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 SIM_BIN="${SIM_BIN:-./build/pgm_cache_simulate}"
-DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}"
+DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-$REPO_ROOT/data/datasets/SOSD}"
 
 ROOT_DIR="${ROOT_DIR:-build/log/exp}"
 WORKLOAD_DIR="${WORKLOAD_DIR:-$ROOT_DIR/workloads}"

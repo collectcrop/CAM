@@ -25,11 +25,14 @@ GENERATED_DIR="${GENERATED_DIR:-$RMI_EVAL_DIR/generated}"
 RESULTS_DIR="${RESULTS_DIR:-$RMI_EVAL_DIR/results}"
 RMI_DATA_DIR="${RMI_DATA_DIR:-$RMI_REPO/rmi_data}"
 BUILD_DIR="${BUILD_DIR:-build}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 TRAIN_DATA_PATH="${TRAIN_DATA_PATH:-${DATA_PATH:-src/rmi/dataset/books_200M_uint64_unique_fixed}}"
 COLLECT_DATA_PATH="${COLLECT_DATA_PATH:-$TRAIN_DATA_PATH}"
-QUERY_PATH="${QUERY_PATH:-${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}/books_200M_uint64_unique.query.bin}"
+QUERY_PATH="${QUERY_PATH:-${DATASETS_DIRECTORY:-$REPO_ROOT/data/datasets/SOSD}/books_200M_uint64_unique.query.bin}"
 COLLECT_DATA_HEADER="${COLLECT_DATA_HEADER:-yes}"
+AUTO_PREPARE_RMI_TRAIN_DATA="${AUTO_PREPARE_RMI_TRAIN_DATA:-1}"
+TRAIN_DATA_SOURCE_HEADER="${TRAIN_DATA_SOURCE_HEADER:-auto}"
 
 MODELS="${MODELS:-linear_spline,linear}"
 NAMESPACE_PREFIX="${NAMESPACE_PREFIX:-books_rmi}"
@@ -49,6 +52,39 @@ abspath() {
     /*) printf '%s\n' "$1" ;;
     *) printf '%s\n' "$REPO_ROOT/$1" ;;
   esac
+}
+
+default_train_data_source_path() {
+  if [ -n "${TRAIN_DATA_SOURCE_PATH:-}" ]; then
+    printf '%s\n' "$TRAIN_DATA_SOURCE_PATH"
+    return 0
+  fi
+
+  if [ "$COLLECT_DATA_PATH" != "$TRAIN_DATA_PATH" ]; then
+    printf '%s\n' "$COLLECT_DATA_PATH"
+    return 0
+  fi
+
+  local dir base stem datasets_dir candidate
+  dir="$(dirname "$TRAIN_DATA_PATH")"
+  base="$(basename "$TRAIN_DATA_PATH")"
+  datasets_dir="${DATASETS_DIRECTORY:-$REPO_ROOT/data/datasets/SOSD}"
+
+  case "$base" in
+    *_fixed)
+      stem="${base%_fixed}"
+      for candidate in "$dir/$stem" "$datasets_dir/$stem"; do
+        if [ -e "$candidate" ]; then
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+      printf '%s\n' "$datasets_dir/$stem"
+      return 0
+      ;;
+  esac
+
+  printf '%s\n' "$COLLECT_DATA_PATH"
 }
 
 model_tag() {
@@ -98,6 +134,26 @@ validate_namespace_matches_training_data() {
   echo "        TRAIN_DATA_PATH=$TRAIN_DATA_PATH (token=$train_token)" >&2
   echo "        Set both values for the same dataset, or set ALLOW_RMI_DATASET_MISMATCH=1 to override." >&2
   exit 1
+}
+
+prepare_rmi_training_data() {
+  if [ "$AUTO_PREPARE_RMI_TRAIN_DATA" != "1" ]; then
+    return 0
+  fi
+  if [ "$TRAIN_DATA_SOURCE_ABS" = "$TRAIN_DATA_ABS" ]; then
+    return 0
+  fi
+
+  local source_header="$TRAIN_DATA_SOURCE_HEADER"
+  if [ "$source_header" = "auto" ] && [ "$TRAIN_DATA_SOURCE_ABS" = "$COLLECT_DATA_ABS" ]; then
+    source_header="$COLLECT_DATA_HEADER"
+  fi
+
+  echo "[prepare][rmi-data] source=$TRAIN_DATA_SOURCE_ABS output=$TRAIN_DATA_ABS input_header=$source_header"
+  run_cmd "$PYTHON_BIN" "$REPO_ROOT/scripts/prepare_rmi_training_data.py" \
+    --input "$TRAIN_DATA_SOURCE_ABS" \
+    --output "$TRAIN_DATA_ABS" \
+    --input-header "$source_header"
 }
 
 run_cmd() {
@@ -244,6 +300,8 @@ BUILD_DIR_ABS="$(abspath "$BUILD_DIR")"
 TRAIN_DATA_ABS="$(abspath "$TRAIN_DATA_PATH")"
 COLLECT_DATA_ABS="$(abspath "$COLLECT_DATA_PATH")"
 QUERY_ABS="$(abspath "$QUERY_PATH")"
+TRAIN_DATA_SOURCE_PATH="$(default_train_data_source_path)"
+TRAIN_DATA_SOURCE_ABS="$(abspath "$TRAIN_DATA_SOURCE_PATH")"
 
 if [ "$NAMESPACE_PREFIX" != "books_rmi" ] || [ "$MODELS" != "linear_spline,linear" ]; then
   echo "[warn] exp/rmi_bench.cpp is currently wired to books_rmi_linear_spline_linear_<BF>."
@@ -251,6 +309,7 @@ if [ "$NAMESPACE_PREFIX" != "books_rmi" ] || [ "$MODELS" != "linear_spline,linea
 fi
 
 echo "[config] TRAIN_DATA_PATH=$TRAIN_DATA_ABS"
+echo "[config] TRAIN_DATA_SOURCE_PATH=$TRAIN_DATA_SOURCE_ABS"
 echo "[config] COLLECT_DATA_PATH=$COLLECT_DATA_ABS"
 echo "[config] QUERY_PATH=$QUERY_ABS"
 echo "[config] RMI_DATA_DIR=$RMI_DATA_DIR_ABS"
@@ -261,11 +320,14 @@ echo "[config] BF_LIST=$BF_LIST"
 echo "[config] COLLECT_RECORDS=$COLLECT_RECORDS"
 echo "[config] BUILD_RMI_BENCH=$BUILD_RMI_BENCH"
 echo "[config] ALLOW_RMI_DATASET_MISMATCH=$ALLOW_RMI_DATASET_MISMATCH"
+echo "[config] AUTO_PREPARE_RMI_TRAIN_DATA=$AUTO_PREPARE_RMI_TRAIN_DATA"
+echo "[config] TRAIN_DATA_SOURCE_HEADER=$TRAIN_DATA_SOURCE_HEADER"
 
 if [ "$DRY_RUN" != "1" ]; then
   mkdir -p "$GENERATED_DIR_ABS" "$RESULTS_DIR_ABS" "$RMI_DATA_DIR_ABS"
 fi
 
+prepare_rmi_training_data
 validate_namespace_matches_training_data
 
 for BF in $BF_LIST; do

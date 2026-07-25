@@ -6,8 +6,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 [ -f config.sh ] && source config.sh
 
-PYTHON_BIN="${PYTHON_BIN:-$HOME/miniconda3/bin/python}"
-DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-$REPO_ROOT/data/datasets/SOSD}"
 DATA_FILE="${DATA_FILE:-books_200M_uint64_unique}"
 QUERY_FILE="${QUERY_FILE:-books_200M_uint64_unique.query.bin}"
 DATASET_TAG="${DATASET_TAG:-books_200M}"
@@ -34,6 +34,7 @@ SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_ESTIMATE="${SKIP_ESTIMATE:-0}"
 SKIP_BENCH="${SKIP_BENCH:-0}"
 SKIP_PLOT="${SKIP_PLOT:-0}"
+EPSILON_PLOT_ONLY_LOGICAL_IOS="${EPSILON_PLOT_ONLY_LOGICAL_IOS:-1}"
 
 DATA_PATH="${DATA_PATH:-$DATASETS_DIRECTORY/$DATA_FILE}"
 QUERY_PATH="${QUERY_PATH:-$DATASETS_DIRECTORY/$QUERY_FILE}"
@@ -72,6 +73,7 @@ echo "[config] EPS_LIST=$EPS_LIST"
 echo "[config] POLICIES=$POLICIES"
 echo "[config] COLD_START_CORRECTION=$COLD_START_CORRECTION"
 echo "[config] ESTIMATE_QUERY_FRACTION=$ESTIMATE_QUERY_FRACTION"
+echo "[config] EPSILON_PLOT_ONLY_LOGICAL_IOS=$EPSILON_PLOT_ONLY_LOGICAL_IOS"
 
 if [ "$SKIP_BUILD" != "1" ]; then
   cmake --build build --target pgm_bench
@@ -172,6 +174,7 @@ fi
 if [ "$SKIP_PLOT" != "1" ]; then
   estimate_paths=()
   bench_paths=()
+  plot_args=()
 
   for POLICY_NAME in $POLICIES; do
     estimate_paths+=("$LOG_DIR/${DATA_FILE}_${POLICY_NAME}.log")
@@ -180,13 +183,17 @@ if [ "$SKIP_PLOT" != "1" ]; then
   for M in $MEMORY_LIST; do
     bench_paths+=("$LOG_DIR/${DATASET_TAG}_M${M}_bench.csv")
   done
+  if [ "$EPSILON_PLOT_ONLY_LOGICAL_IOS" = "1" ]; then
+    plot_args+=(--only-logical-ios)
+  fi
 
   echo "[plot] -> $OUTPUT_DIR"
   "$PYTHON_BIN" visualize/plot_epsilon_benchmarks.py \
     --estimate-paths "${estimate_paths[@]}" \
     --bench-paths "${bench_paths[@]}" \
     --skip-fitcam \
-    --output-dir "$OUTPUT_DIR"
+    --output-dir "$OUTPUT_DIR" \
+    "${plot_args[@]}"
 fi
 
 echo "[done] estimate logs: $LOG_DIR/${DATA_FILE}_{POLICY}.log"

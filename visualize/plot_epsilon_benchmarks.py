@@ -16,6 +16,10 @@ TMP_XDG_CACHE_HOME.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(TMP_MPLCONFIGDIR))
 os.environ.setdefault("XDG_CACHE_HOME", str(TMP_XDG_CACHE_HOME))
 
+import matplotlib
+
+matplotlib.use(os.environ.get("MPLBACKEND", "Agg"))
+
 try:
     import matplotlib.pyplot as plt
     from matplotlib.ticker import PercentFormatter, ScalarFormatter
@@ -24,16 +28,20 @@ try:
 except ImportError as exc:  # pragma: no cover - runtime environment guard
     raise SystemExit(
         "This script requires matplotlib and pandas. "
-        "Run it with ~/miniconda3/bin/python."
+        "Set PYTHON_BIN in config.sh to a Python environment with those packages."
     ) from exc
 
-plt.rcParams.update({
-                "text.usetex": True,
-                "font.family": "serif",
-                "font.serif": ["Times", "Computer Modern Roman"],
-                "axes.unicode_minus": False,
-                "text.latex.preamble": r"\usepackage{amsmath}",
-            })
+USE_TEX = os.environ.get("CAM_PLOT_USETEX", "0").lower() in {"1", "true", "yes", "on"}
+
+plot_rc = {
+    "text.usetex": USE_TEX,
+    "font.family": "serif",
+    "font.serif": ["Times New Roman", "Times", "DejaVu Serif", "Computer Modern Roman"],
+    "axes.unicode_minus": False,
+}
+if USE_TEX:
+    plot_rc["text.latex.preamble"] = r"\usepackage{amsmath}"
+plt.rcParams.update(plot_rc)
 # global fonts
 TITLE_FONTSIZE = 30     
 XLABEL_FONTSIZE = 30    
@@ -155,6 +163,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-fitcam",
         action="store_true",
         help="Skip auto-discovery and plotting of q30 fitCAM corrected-vs-real figures.",
+    )
+    parser.add_argument(
+        "--only-logical-ios",
+        action="store_true",
+        help="Only write the main logical_ios_vs_epsilon PDF; skip legends, reports, and other figures.",
     )
     return parser.parse_args()
 
@@ -1056,7 +1069,11 @@ def write_fitcam_outputs(
 
     return artifact_paths
 
-def plot_logical_io_vs_epsilon(dataset_df: pd.DataFrame, output_path: Path, legend_output_path: Path) -> None:
+def plot_logical_io_vs_epsilon(
+    dataset_df: pd.DataFrame,
+    output_path: Path,
+    legend_output_path: Path | None,
+) -> None:
     dataset_df = filter_min_epsilon(dataset_df)
     m_values = sorted(dataset_df["M"].unique().tolist())
     fig, axes, nrows, ncols = make_axes(m_values)
@@ -1107,7 +1124,8 @@ def plot_logical_io_vs_epsilon(dataset_df: pd.DataFrame, output_path: Path, lege
     # fig.suptitle(f"{dataset_key}: Logical IOs vs Estimated IOs", fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     save_figure(fig, output_path)
-    save_legend_figure(list(legend_map.values()), list(legend_map.keys()), legend_output_path)
+    if legend_output_path is not None:
+        save_legend_figure(list(legend_map.values()), list(legend_map.keys()), legend_output_path)
 
 
 def plot_hit_ratio_vs_epsilon(dataset_df: pd.DataFrame, output_path: Path, legend_output_path: Path) -> None:
@@ -1320,10 +1338,15 @@ def write_dataset_outputs(
     policies: set[str] | None,
     m_values: set[int] | None,
     skip_fitcam: bool,
+    only_logical_ios: bool,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    merged_csv_path = output_dir / f"{prefix}_merged_metrics.csv"
     logical_io_path = output_dir / f"{prefix}_logical_ios_vs_epsilon.pdf"
+    if only_logical_ios:
+        plot_logical_io_vs_epsilon(dataset_df, logical_io_path, None)
+        return [logical_io_path]
+
+    merged_csv_path = output_dir / f"{prefix}_merged_metrics.csv"
     logical_io_legend_path = output_dir / f"{prefix}_logical_ios_vs_epsilon_legend.pdf"
     hit_ratio_path = output_dir / f"{prefix}_hit_ratio_vs_epsilon.pdf"
     hit_ratio_legend_path = output_dir / f"{prefix}_hit_ratio_vs_epsilon_legend.pdf"
@@ -1414,6 +1437,7 @@ def main() -> None:
             policies=policies,
             m_values=m_values,
             skip_fitcam=args.skip_fitcam,
+            only_logical_ios=args.only_logical_ios,
         )
         for path in artifact_paths:
             print(path)

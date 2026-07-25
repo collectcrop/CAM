@@ -12,7 +12,9 @@ cd "$REPO_ROOT"
 [ -f config.sh ] && source config.sh
 
 BINARY="${BINARY:-./build/pgm_join_fit}"
-DATA_DIR="${DATA_DIR:-/mnt/data/Dataset/public/SOSD}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-$REPO_ROOT/data/datasets/SOSD}"
+DATA_DIR="${DATA_DIR:-$DATASETS_DIRECTORY}"
 OUT_DIR="${OUT_DIR:-build/log/join_fit}"
 DATASET="${DATASET:-books_10M_uint64_unique}"
 NUM_KEYS="${NUM_KEYS:-10000000}"
@@ -25,27 +27,33 @@ POINT_N_LIST="${POINT_N_LIST:-1 2 5 10 20}"
 # Range calibration: target page spans and samples per span
 RANGE_PAGE_SPANS="${RANGE_PAGE_SPANS:-1 2 4 8 16 32 64}"
 RANGE_REPEATS="${RANGE_REPEATS:-8}"
+FIT_AFTER_RUN="${FIT_AFTER_RUN:-1}"
+FIT_SCRIPT="${FIT_SCRIPT:-utils/fit_join_cost_model.py}"
+FIT_OUTPUT_PREFIX="${FIT_OUTPUT_PREFIX:-$OUT_DIR/${DATASET}_join_cost_params}"
 
 mkdir -p "$OUT_DIR"
 
 # ------------------------------------------------------------------
 # Compute max N and ensure point query file exists
 # ------------------------------------------------------------------
-MAX_POINT_N=$(echo "$POINT_N_LIST" | tr ' ' '\n' | sort -n | tail -1)
-POINT_QUERY_FILE="${POINT_QUERY_FILE:-${DATA_DIR}/${DATASET}.${MAX_POINT_N}Mquery.bin}"
+ensure_point_query_file() {
+    local max_point_n
+    max_point_n=$(echo "$POINT_N_LIST" | tr ' ' '\n' | sort -n | tail -1)
+    POINT_QUERY_FILE="${POINT_QUERY_FILE:-${DATA_DIR}/${DATASET}.${max_point_n}Mquery.bin}"
 
-if [ ! -f "$POINT_QUERY_FILE" ]; then
-    echo "[*] Generating point query file with $((MAX_POINT_N * 1000000)) queries -> $(basename "$POINT_QUERY_FILE")"
-    python3 -c "
+    if [ ! -f "$POINT_QUERY_FILE" ]; then
+        echo "[*] Generating point query file with $((max_point_n * 1000000)) queries -> $(basename "$POINT_QUERY_FILE")"
+        "$PYTHON_BIN" -c "
 import sys; sys.path.insert(0, 'utils')
 import numpy as np
 from generate_query import generate_realistic_queries_from_data
 keys = np.fromfile('$DATA_DIR/$DATASET', dtype=np.uint64)
-queries = generate_realistic_queries_from_data(keys, num_queries=$((MAX_POINT_N * 1000000)), seed=42)
+queries = generate_realistic_queries_from_data(keys, num_queries=$((max_point_n * 1000000)), seed=42)
 queries.tofile('$POINT_QUERY_FILE')
 print(f'[+] Generated {len(queries)} point queries')
 "
-fi
+    fi
+}
 
 # ------------------------------------------------------------------
 # Run point sweep
@@ -84,25 +92,46 @@ run_range() {
         --policy "$POLICY"
 }
 
+fit_params() {
+    local mode="$1"
+    if [ "$FIT_AFTER_RUN" != "1" ]; then
+        return 0
+    fi
+    echo "=== Fitting cost model parameters ==="
+    "$PYTHON_BIN" "$FIT_SCRIPT" \
+        --data-dir "$OUT_DIR" \
+        --dataset "$DATASET" \
+        --epsilon "$EPSILON" \
+        --mode "$mode" \
+        --output-json "${FIT_OUTPUT_PREFIX}.json" \
+        --output-csv "${FIT_OUTPUT_PREFIX}.csv" \
+        --output-env "${FIT_OUTPUT_PREFIX}.env"
+}
+
 # ------------------------------------------------------------------
 # Dispatch
 # ------------------------------------------------------------------
 case "${1:-all}" in
     point)
+        ensure_point_query_file
         for N in $POINT_N_LIST; do
             run_point "$N"
         done
+        fit_params point
         ;;
     range)
         run_range
+        fit_params range
         ;;
     all)
         echo "=== Point sweep ==="
+        ensure_point_query_file
         for N in $POINT_N_LIST; do
             run_point "$N"
         done
         echo "=== Range sweep ==="
         run_range
+        fit_params all
         ;;
     *)
         echo "Usage: $0 {point|range|all}"

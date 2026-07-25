@@ -9,7 +9,16 @@ visualize/*
 !visualize/plot_epsilon_benchmarks.py
 !visualize/plot_motivation_query_breakdown.py
 __pycache__/
+
+# Local RMI datasets, generated artifacts, and build outputs.
 src/rmi/dataset/
-# src/rmi/rmi_data/
-# src/rmi/rmi_eval/generated/
+src/rmi/rmi_data/
+src/rmi/rmi_eval/generated/
 src/rmi/rmi_eval/results/
+src/rmi/rmi_eval/rmi_collector
+src/rmi/target/
+src/rmi/*.meta
+src/rmi/*_L1_PARAMETERS
+src/rmi/*_data.h
+src/rmi/*_rmi_*.h
+src/rmi/*_rmi_*.cpp

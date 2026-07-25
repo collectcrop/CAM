@@ -20,7 +20,7 @@ cd "$REPO_ROOT"
 [ -f config.sh ] && source config.sh
 
 BINARY="${BINARY:-./build/pgm_hybrid_join}"
-DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}"
+DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-$REPO_ROOT/data/datasets/SOSD}"
 DATASET="${DATASET:-books_200M_uint64_unique}"
 QUERY_TAG="${QUERY_TAG:-1M}"
 TABLE_LIST="${TABLE_LIST:-1 2 3 4 5 6}"

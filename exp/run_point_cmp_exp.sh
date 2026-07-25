@@ -6,10 +6,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 [ -f config.sh ] && source config.sh
 
-PYTHON_BIN="${PYTHON_BIN:-$HOME/miniconda3/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 SIM_BIN="${SIM_BIN:-./build/pgm_cache_simulate}"
 WORKLOAD="${WORKLOAD:-w1}"
-DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-/mnt/data/Dataset/public/SOSD}"
+DATASETS_DIRECTORY="${DATASETS_DIRECTORY:-$REPO_ROOT/data/datasets/SOSD}"
 
 OUTPUT_ROOT="${OUTPUT_ROOT:-build/log/point_cmp}"
 ROOT_DIR="${ROOT_DIR:-$OUTPUT_ROOT/$WORKLOAD}"
@@ -29,6 +29,7 @@ STRATEGY="${STRATEGY:-all_in_once}"
 NUM_QUERIES="${NUM_QUERIES:-1000000}"
 QUERY_LIMIT="${QUERY_LIMIT:-0}"
 COLD_START_CORRECTION="${COLD_START_CORRECTION:-1}"
+CAM_WARMUP_POSITION_CACHE="${CAM_WARMUP_POSITION_CACHE:-1}"
 ORDER_MODE="${ORDER_MODE:-global_shuffle}"
 WINDOW_SIZE="${WINDOW_SIZE:-100000}"
 WINDOW_RATIO_JITTER="${WINDOW_RATIO_JITTER:-0.3}"
@@ -57,7 +58,7 @@ echo "[config] EPS_LIST=$EPS_LIST"
 echo "[config] SAMPLE_RATES=${sample_rate_args[*]}"
 echo "[config] POLICY=$POLICY STRATEGY=$STRATEGY"
 echo "[config] NUM_QUERIES=$NUM_QUERIES QUERY_LIMIT=$QUERY_LIMIT"
-echo "[config] COLD_START_CORRECTION=$COLD_START_CORRECTION"
+echo "[config] COLD_START_CORRECTION=$COLD_START_CORRECTION CAM_WARMUP_POSITION_CACHE=$CAM_WARMUP_POSITION_CACHE"
 echo "[config] ORDER_MODE=$ORDER_MODE WINDOW_SIZE=$WINDOW_SIZE WINDOW_RATIO_JITTER=$WINDOW_RATIO_JITTER"
 
 if [ "$SKIP_BUILD" != "1" ]; then
@@ -173,6 +174,9 @@ if [ "$SKIP_CAM" != "1" ]; then
   cam_args=()
   if [ "$COLD_START_CORRECTION" = "1" ]; then
     cam_args+=(--cold-start-correction)
+  fi
+  if [ "$CAM_WARMUP_POSITION_CACHE" != "1" ]; then
+    cam_args+=(--no-warmup-position-cache)
   fi
   "$PYTHON_BIN" exp/point_cmp_exp.py cam-estimate \
     --datasets-directory "$DATASETS_DIRECTORY" \

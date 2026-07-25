@@ -9,7 +9,10 @@ import subprocess
 import time
 from pathlib import Path
 
-DEFAULT_DATASETS_DIRECTORY = os.environ.get("DATASETS_DIRECTORY", "/mnt/data/Dataset/public/SOSD")
+DEFAULT_DATASETS_DIRECTORY = os.environ.get(
+    "DATASETS_DIRECTORY",
+    str(Path(__file__).resolve().parents[1] / "data" / "datasets" / "SOSD"),
+)
 
 
 def parse_policy_list(raw: str) -> list[str]:
@@ -89,8 +92,8 @@ def run_estimator(
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "Failed to import optimalEpsilon dependencies. "
-            "Please run this script with an environment that has numpy/scipy installed "
-            "(for example: ~/miniconda3/bin/python)."
+            "Please run this script with an environment that has numpy/scipy installed, "
+            "or set PYTHON_BIN in config.sh."
         ) from exc
 
     rows: list[dict[str, float | int | str]] = []

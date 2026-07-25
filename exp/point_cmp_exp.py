@@ -22,6 +22,7 @@ DEFAULT_DATASETS = [
     "wiki_ts_200M_uint64_unique",
     "osm_cellids_200M_uint64_unique",
 ]
+DEFAULT_DATASETS_DIRECTORY = Path(__file__).resolve().parents[1] / "data" / "datasets" / "SOSD"
 
 
 def split_tokens(values: list[str] | str) -> list[str]:
@@ -215,6 +216,16 @@ def cmd_cam_estimate(args: argparse.Namespace) -> None:
             raise FileNotFoundError(f"missing workload file: {q_path}")
         full_queries = load_limited_queries(q_path, args.query_limit)
         total_queries = int(full_queries.size)
+        warmup_time_s = 0.0
+        if args.warmup_position_cache:
+            max_keep = max(sample_size(total_queries, float(rate["sample_fraction"])) for rate in rates)
+            warmup_t0 = time.perf_counter()
+            prepare_position_cache(data, full_queries[:max_keep])
+            warmup_time_s = time.perf_counter() - warmup_t0
+            print(
+                f"[cam][warmup] {dataset} {args.workload} "
+                f"({max_keep}/{total_queries}, setup={warmup_time_s:.6f}s)"
+            )
 
         for rate in rates:
             label = str(rate["sample_label"])
@@ -282,6 +293,8 @@ def cmd_cam_estimate(args: argparse.Namespace) -> None:
                             "estimated_index_bytes": float(detail.get("index_bytes", 0.0)),
                             "estimated_buffer_bytes": float(detail.get("buffer_bytes", 0.0)),
                             "first_touch_scale": first_touch_scale,
+                            "warmup_position_cache": int(args.warmup_position_cache),
+                            "warmup_position_cache_time_s": float(warmup_time_s),
                         }
                     )
 
@@ -583,7 +596,7 @@ def cmd_summarize(args: argparse.Namespace) -> None:
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--datasets-directory", type=Path, default=Path(os.environ.get("DATASETS_DIRECTORY", "/mnt/data/Dataset/public/SOSD")))
+    parser.add_argument("--datasets-directory", type=Path, default=Path(os.environ.get("DATASETS_DIRECTORY", str(DEFAULT_DATASETS_DIRECTORY))))
     parser.add_argument("--datasets", nargs="+", default=DEFAULT_DATASETS)
     parser.add_argument("--workload", default="w4")
 
@@ -619,6 +632,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_cam.add_argument("--ipp", type=int, default=512)
     p_cam.add_argument("--page-size", type=int, default=4096)
     p_cam.add_argument("--cold-start-correction", action="store_true")
+    p_cam.add_argument(
+        "--no-warmup-position-cache",
+        dest="warmup_position_cache",
+        action="store_false",
+        help="Include cold memmap/page-cache effects in the first timed sample-rate setup.",
+    )
+    p_cam.set_defaults(warmup_position_cache=True)
     p_cam.set_defaults(func=cmd_cam_estimate)
 
     p_sum = sub.add_parser("summarize", help="Merge actual, replay, and CAM estimate CSVs.")

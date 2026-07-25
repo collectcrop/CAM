@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -54,6 +55,10 @@ inline std::string resolve_dataset_path(const std::string& value) {
     }
     if (fs::exists(path)) {
         return fs::absolute(path).string();
+    }
+    const char* datasets_directory = std::getenv("DATASETS_DIRECTORY");
+    if (datasets_directory != nullptr && datasets_directory[0] != '\0') {
+        return (fs::path(datasets_directory) / path).string();
     }
     return (fs::path(DATASETS) / path).string();
 }

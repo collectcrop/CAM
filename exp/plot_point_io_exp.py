@@ -2,23 +2,28 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
+import matplotlib
+matplotlib.use(os.environ.get("MPLBACKEND", "Agg"))
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.patches import Patch
 from matplotlib.ticker import PercentFormatter
 
-plt.rcParams.update(
-    {
-        "text.usetex": True,
-        "font.family": "serif",
-        "font.serif": ["Times", "Computer Modern Roman"],
-        "axes.unicode_minus": False,
-        "text.latex.preamble": r"\usepackage{amsmath}",
-    }
-)
+USE_TEX = os.environ.get("CAM_PLOT_USETEX", "0").lower() in {"1", "true", "yes", "on"}
+
+plot_rc = {
+    "text.usetex": USE_TEX,
+    "font.family": "serif",
+    "font.serif": ["Times New Roman", "Times", "DejaVu Serif", "Computer Modern Roman"],
+    "axes.unicode_minus": False,
+}
+if USE_TEX:
+    plot_rc["text.latex.preamble"] = r"\usepackage{amsmath}"
+plt.rcParams.update(plot_rc)
 
 DATASET_ORDER = ("books","fb", "wiki", "osm")
 WORKLOAD_ORDER = ("w1", "w2", "w3", "w4", "w5", "w6")

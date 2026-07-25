@@ -33,15 +33,13 @@ SUPPORTED_BRANCH_FACTORS = [
 ]
 
 DEFAULT_BRANCH_FACTORS = SUPPORTED_BRANCH_FACTORS[2:]
+DEFAULT_DATASETS_DIRECTORY = Path(__file__).resolve().parents[1] / "data" / "datasets" / "SOSD"
 
 
 def default_python_bin() -> str:
     env_python = os.environ.get("PYTHON_BIN")
     if env_python:
         return env_python
-    conda_python = Path.home() / "miniconda3/bin/python"
-    if conda_python.exists():
-        return str(conda_python)
     return sys.executable
 
 
@@ -69,7 +67,7 @@ def parse_args() -> argparse.Namespace:
             "The remaining memory is the optimizer index-size upper bound."
         ),
     )
-    parser.add_argument("--datasets-directory", default=os.environ.get("DATASETS_DIRECTORY", "/mnt/data/Dataset/public/SOSD"))
+    parser.add_argument("--datasets-directory", default=os.environ.get("DATASETS_DIRECTORY", str(DEFAULT_DATASETS_DIRECTORY)))
     parser.add_argument("--rmi-bin", default="./build/rmi_bench")
     parser.add_argument("--python-bin", default=default_python_bin())
     parser.add_argument("--rmi-directory", default="src/rmi", help="CDFShop/RMI cargo project directory.")
@@ -111,8 +109,22 @@ def parse_args() -> argparse.Namespace:
         "--optimizer-data",
         default=None,
         help=(
-            "Input for CDFShop --optimize. Defaults to --data. The RMI loader "
-            "expects an 8-byte count header."
+            "Source input for CDFShop --optimize. Defaults to --data; a headered "
+            "optimizer input is prepared automatically when the source has no count header."
+        ),
+    )
+    parser.add_argument(
+        "--optimizer-data-header",
+        default="auto",
+        choices=["auto", "yes", "no"],
+        help="Whether --optimizer-data already has the leading uint64 count header.",
+    )
+    parser.add_argument(
+        "--optimizer-prepared-data",
+        default=None,
+        help=(
+            "Headered CDFShop optimizer input path to create when the optimizer source "
+            "has no count header. Defaults to src/rmi/dataset/<dataset>_fixed."
         ),
     )
     parser.add_argument(
@@ -213,6 +225,64 @@ def infer_key_count(path: Path, header_mode: str) -> int:
     if header + 1 == total_u64:
         return int(header)
     return total_u64
+
+
+def has_count_header(path: Path) -> bool:
+    size = path.stat().st_size
+    if size < 8 or size % 8 != 0:
+        raise ValueError(f"dataset size is not a positive multiple of uint64: {path}")
+    total_u64 = size // 8
+    with path.open("rb") as f:
+        header = struct.unpack("<Q", f.read(8))[0]
+    return header + 1 == total_u64
+
+
+def resolve_output_path(path_text: str, repo_root: Path) -> Path:
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        path = repo_root / path
+    return path.resolve()
+
+
+def prepare_headered_optimizer_data(
+    *,
+    repo_root: Path,
+    python_bin: Path,
+    optimizer_source: Path,
+    optimizer_source_header: str,
+    prepared_output: Path,
+    dry_run: bool,
+) -> Path:
+    if optimizer_source_header == "yes":
+        if not dry_run and not has_count_header(optimizer_source):
+            raise ValueError(f"--optimizer-data-header=yes but source has no valid count header: {optimizer_source}")
+        return optimizer_source
+    if optimizer_source_header == "auto" and not dry_run and has_count_header(optimizer_source):
+        return optimizer_source
+
+    if optimizer_source == prepared_output:
+        raise ValueError("--optimizer-data and --optimizer-prepared-data must be different paths")
+
+    print(
+        "[prepare][optimizer-data] "
+        f"source={optimizer_source} output={prepared_output} input_header={optimizer_source_header}"
+    )
+    output = run_command(
+        [
+            str(python_bin),
+            str(repo_root / "scripts" / "prepare_rmi_training_data.py"),
+            "--input",
+            str(optimizer_source),
+            "--output",
+            str(prepared_output),
+            "--input-header",
+            optimizer_source_header,
+        ],
+        dry_run=dry_run,
+    )
+    if output.strip():
+        print(output.strip())
+    return prepared_output
 
 
 def normalize_csv(value: str) -> str:
@@ -890,7 +960,22 @@ def main() -> None:
     )
 
     optimizer_data_text = args.optimizer_data or str(data_path)
-    optimizer_data = resolve_optimizer_input(optimizer_data_text, repo_root, rmi_dir, datasets_directory)
+    optimizer_source = resolve_optimizer_input(optimizer_data_text, repo_root, rmi_dir, datasets_directory)
+    optimizer_source_header = args.optimizer_data_header
+    if args.optimizer_data is None and optimizer_source_header == "auto":
+        optimizer_source_header = args.header
+    if args.optimizer_prepared_data:
+        optimizer_prepared_data = resolve_output_path(args.optimizer_prepared_data, repo_root)
+    else:
+        optimizer_prepared_data = (rmi_dir / "dataset" / f"{optimizer_source.name}_fixed").resolve()
+    optimizer_data = prepare_headered_optimizer_data(
+        repo_root=repo_root,
+        python_bin=python_bin,
+        optimizer_source=optimizer_source,
+        optimizer_source_header=optimizer_source_header,
+        prepared_output=optimizer_prepared_data,
+        dry_run=args.dry_run,
+    )
     optimizer_output = (
         Path(args.optimizer_output).expanduser()
         if args.optimizer_output

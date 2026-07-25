@@ -45,4 +45,4 @@ constexpr size_t PAGE_SIZE     = 4096;
 constexpr const char* SEGMENT_FILE = "pgm_test_file_seg.bin";
 constexpr size_t ITEM_PER_PAGE = PAGE_SIZE / RECORD_SIZE;
 // constexpr size_t BATCH_SIZE    = 64;   // number of pages to read in one batch
-constexpr const char* DATASETS = "/mnt/data/Datasets/SOSD/";
+constexpr const char* DATASETS = "data/datasets/SOSD/";

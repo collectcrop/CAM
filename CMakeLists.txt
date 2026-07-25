@@ -52,8 +52,7 @@ add_executable(pgm_range_cache_simulate
     exp/pgm_range_cache_simulate.cpp
 )
 
-add_executable(rmi_bench
-    exp/rmi_bench.cpp
+set(CAM_RMI_GENERATED_SOURCES
     src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_64.cpp
     src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_128.cpp
     src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_256.cpp
@@ -70,6 +69,13 @@ add_executable(rmi_bench
     src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_524288.cpp
     src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1048576.cpp
     src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2097152.cpp
+)
+
+set_source_files_properties(${CAM_RMI_GENERATED_SOURCES} PROPERTIES GENERATED TRUE)
+
+add_executable(rmi_bench EXCLUDE_FROM_ALL
+    exp/rmi_bench.cpp
+    ${CAM_RMI_GENERATED_SOURCES}
 )
 
 add_executable(motivation_query_breakdown

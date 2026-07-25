@@ -678,8 +678,11 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     print(f"[summarize] summary -> {summary_path}")
 
 
+DEFAULT_DATASETS_DIRECTORY = Path(__file__).resolve().parents[1] / "data" / "datasets" / "SOSD"
+
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--datasets-directory", type=Path, default=Path(os.environ.get("DATASETS_DIRECTORY", "/mnt/data/Dataset/public/SOSD")))
+    parser.add_argument("--datasets-directory", type=Path, default=Path(os.environ.get("DATASETS_DIRECTORY", str(DEFAULT_DATASETS_DIRECTORY))))
     parser.add_argument(
         "--datasets",
         nargs="+",
