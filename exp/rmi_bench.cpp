@@ -13,45 +13,76 @@
 #include "../src/pgm/PointQuery.hpp"
 #include "../src/storage/DiskManager.hpp"
 #include "../src/storage/KeyFile.hpp"
+
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1024.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1024.h"
+#define CAM_HAS_RMI_BOOKS_1024 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_128.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_128.h"
+#define CAM_HAS_RMI_BOOKS_128 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_131072.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_131072.h"
+#define CAM_HAS_RMI_BOOKS_131072 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_16384.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_16384.h"
+#define CAM_HAS_RMI_BOOKS_16384 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2048.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2048.h"
+#define CAM_HAS_RMI_BOOKS_2048 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_256.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_256.h"
+#define CAM_HAS_RMI_BOOKS_256 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_262144.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_262144.h"
+#define CAM_HAS_RMI_BOOKS_262144 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_32768.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_32768.h"
+#define CAM_HAS_RMI_BOOKS_32768 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_4096.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_4096.h"
+#define CAM_HAS_RMI_BOOKS_4096 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_512.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_512.h"
+#define CAM_HAS_RMI_BOOKS_512 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_64.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_64.h"
+#define CAM_HAS_RMI_BOOKS_64 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_65536.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_65536.h"
+#define CAM_HAS_RMI_BOOKS_65536 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_8192.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_8192.h"
+#define CAM_HAS_RMI_BOOKS_8192 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_524288.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_524288.h"
+#define CAM_HAS_RMI_BOOKS_524288 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1048576.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1048576.h"
+#define CAM_HAS_RMI_BOOKS_1048576 1
+#endif
+#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2097152.h")
 #include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2097152.h"
+#define CAM_HAS_RMI_BOOKS_2097152 1
+#endif
 
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
 
 namespace {
-
-#define CAM_RMI_MODEL_LIST(X) \
-    X(books_rmi_linear_spline_linear_64, 64) \
-    X(books_rmi_linear_spline_linear_128, 128) \
-    X(books_rmi_linear_spline_linear_256, 256) \
-    X(books_rmi_linear_spline_linear_512, 512) \
-    X(books_rmi_linear_spline_linear_1024, 1024) \
-    X(books_rmi_linear_spline_linear_2048, 2048) \
-    X(books_rmi_linear_spline_linear_4096, 4096) \
-    X(books_rmi_linear_spline_linear_8192, 8192) \
-    X(books_rmi_linear_spline_linear_16384, 16384) \
-    X(books_rmi_linear_spline_linear_32768, 32768) \
-    X(books_rmi_linear_spline_linear_65536, 65536) \
-    X(books_rmi_linear_spline_linear_131072, 131072) \
-    X(books_rmi_linear_spline_linear_262144, 262144) \
-    X(books_rmi_linear_spline_linear_524288, 524288) \
-    X(books_rmi_linear_spline_linear_1048576, 1048576) \
-    X(books_rmi_linear_spline_linear_2097152, 2097152) 
 
 struct RMIModelSpec {
     const char* name = "";
@@ -63,12 +94,114 @@ struct RMIModelSpec {
     uint64_t (*lookup)(uint64_t, size_t*) = nullptr;
 };
 
-static const RMIModelSpec kRmiModels[] = {
+#ifdef CAM_HAS_RMI_BOOKS_64
+#define CAM_RMI_MODEL_64(X) X(books_rmi_linear_spline_linear_64, 64)
+#else
+#define CAM_RMI_MODEL_64(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_128
+#define CAM_RMI_MODEL_128(X) X(books_rmi_linear_spline_linear_128, 128)
+#else
+#define CAM_RMI_MODEL_128(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_256
+#define CAM_RMI_MODEL_256(X) X(books_rmi_linear_spline_linear_256, 256)
+#else
+#define CAM_RMI_MODEL_256(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_512
+#define CAM_RMI_MODEL_512(X) X(books_rmi_linear_spline_linear_512, 512)
+#else
+#define CAM_RMI_MODEL_512(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_1024
+#define CAM_RMI_MODEL_1024(X) X(books_rmi_linear_spline_linear_1024, 1024)
+#else
+#define CAM_RMI_MODEL_1024(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_2048
+#define CAM_RMI_MODEL_2048(X) X(books_rmi_linear_spline_linear_2048, 2048)
+#else
+#define CAM_RMI_MODEL_2048(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_4096
+#define CAM_RMI_MODEL_4096(X) X(books_rmi_linear_spline_linear_4096, 4096)
+#else
+#define CAM_RMI_MODEL_4096(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_8192
+#define CAM_RMI_MODEL_8192(X) X(books_rmi_linear_spline_linear_8192, 8192)
+#else
+#define CAM_RMI_MODEL_8192(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_16384
+#define CAM_RMI_MODEL_16384(X) X(books_rmi_linear_spline_linear_16384, 16384)
+#else
+#define CAM_RMI_MODEL_16384(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_32768
+#define CAM_RMI_MODEL_32768(X) X(books_rmi_linear_spline_linear_32768, 32768)
+#else
+#define CAM_RMI_MODEL_32768(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_65536
+#define CAM_RMI_MODEL_65536(X) X(books_rmi_linear_spline_linear_65536, 65536)
+#else
+#define CAM_RMI_MODEL_65536(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_131072
+#define CAM_RMI_MODEL_131072(X) X(books_rmi_linear_spline_linear_131072, 131072)
+#else
+#define CAM_RMI_MODEL_131072(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_262144
+#define CAM_RMI_MODEL_262144(X) X(books_rmi_linear_spline_linear_262144, 262144)
+#else
+#define CAM_RMI_MODEL_262144(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_524288
+#define CAM_RMI_MODEL_524288(X) X(books_rmi_linear_spline_linear_524288, 524288)
+#else
+#define CAM_RMI_MODEL_524288(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_1048576
+#define CAM_RMI_MODEL_1048576(X) X(books_rmi_linear_spline_linear_1048576, 1048576)
+#else
+#define CAM_RMI_MODEL_1048576(X)
+#endif
+#ifdef CAM_HAS_RMI_BOOKS_2097152
+#define CAM_RMI_MODEL_2097152(X) X(books_rmi_linear_spline_linear_2097152, 2097152)
+#else
+#define CAM_RMI_MODEL_2097152(X)
+#endif
+
+#define CAM_RMI_MODEL_LIST(X) \
+    CAM_RMI_MODEL_64(X) \
+    CAM_RMI_MODEL_128(X) \
+    CAM_RMI_MODEL_256(X) \
+    CAM_RMI_MODEL_512(X) \
+    CAM_RMI_MODEL_1024(X) \
+    CAM_RMI_MODEL_2048(X) \
+    CAM_RMI_MODEL_4096(X) \
+    CAM_RMI_MODEL_8192(X) \
+    CAM_RMI_MODEL_16384(X) \
+    CAM_RMI_MODEL_32768(X) \
+    CAM_RMI_MODEL_65536(X) \
+    CAM_RMI_MODEL_131072(X) \
+    CAM_RMI_MODEL_262144(X) \
+    CAM_RMI_MODEL_524288(X) \
+    CAM_RMI_MODEL_1048576(X) \
+    CAM_RMI_MODEL_2097152(X)
+
+static const std::vector<RMIModelSpec> kRmiModels = [] {
+    std::vector<RMIModelSpec> models;
+    models.reserve(16);
 #define CAM_REGISTER_RMI(ns, branch) \
-    {ns::NAME, branch, ns::RMI_SIZE, ns::BUILD_TIME_NS, ns::load, ns::cleanup, ns::lookup},
+    models.push_back({ns::NAME, branch, ns::RMI_SIZE, ns::BUILD_TIME_NS, ns::load, ns::cleanup, ns::lookup});
     CAM_RMI_MODEL_LIST(CAM_REGISTER_RMI)
 #undef CAM_REGISTER_RMI
-};
+    return models;
+}();
 
 struct Config {
     std::string data_path;
@@ -121,8 +254,11 @@ std::string resolve_local_path(const std::string& value) {
 }
 
 std::string supported_rmi_list() {
+    if (kRmiModels.empty()) {
+        return "<none>";
+    }
     std::ostringstream oss;
-    for (size_t i = 0; i < std::size(kRmiModels); ++i) {
+    for (size_t i = 0; i < kRmiModels.size(); ++i) {
         if (i != 0) {
             oss << ',';
         }
@@ -170,10 +306,16 @@ const RMIModelSpec* find_rmi_model(const std::string& raw_token) {
 }
 
 std::vector<const RMIModelSpec*> parse_rmi_list(const std::string& value) {
+    if (kRmiModels.empty()) {
+        throw std::invalid_argument(
+            "no RMI models were compiled into rmi_bench; run exp/generate_rmi_headers.sh "
+            "with the branch factors you want to benchmark, then rebuild rmi_bench");
+    }
+
     const std::string upper = cam::storage::to_upper(cam::storage::trim(value));
     if (upper.empty() || upper == "ALL") {
         std::vector<const RMIModelSpec*> all;
-        all.reserve(std::size(kRmiModels));
+        all.reserve(kRmiModels.size());
         for (const auto& model : kRmiModels) {
             all.push_back(&model);
         }

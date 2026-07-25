@@ -335,6 +335,8 @@ for BF in $BF_LIST; do
 done
 
 if [ "$BUILD_RMI_BENCH" = "1" ]; then
+  echo "[configure] cmake"
+  run_cmd cmake -S "$REPO_ROOT" -B "$BUILD_DIR_ABS"
   echo "[build] rmi_bench"
   run_cmd cmake --build "$BUILD_DIR_ABS" --target rmi_bench -j "$BUILD_JOBS"
 fi

@@ -78,6 +78,11 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing per-BF RMI collector CSVs for optimalBF.",
     )
     parser.add_argument(
+        "--rmi-generated-dir",
+        default="src/rmi/rmi_eval/generated",
+        help="Directory containing generated RMI C++ headers/sources compiled into rmi_bench.",
+    )
+    parser.add_argument(
         "--rmi-name-prefix",
         default="books_rmi_linear_spline_linear",
         help="Prefix for collector CSVs, e.g. '<prefix>_<BF>.csv'.",
@@ -242,6 +247,22 @@ def resolve_output_path(path_text: str, repo_root: Path) -> Path:
     if not path.is_absolute():
         path = repo_root / path
     return path.resolve()
+
+
+def detect_available_rmi_bench_bfs(
+    generated_dir: Path,
+    rmi_data_dir: Path,
+    rmi_prefix: str,
+) -> set[int]:
+    available: set[int] = set()
+    for bf in SUPPORTED_BRANCH_FACTORS:
+        if (
+            (generated_dir / f"{rmi_prefix}_{bf}.h").exists()
+            and (generated_dir / f"{rmi_prefix}_{bf}.cpp").exists()
+            and (rmi_data_dir / f"{rmi_prefix}_{bf}_L1_PARAMETERS").exists()
+        ):
+            available.add(bf)
+    return available
 
 
 def prepare_headered_optimizer_data(
@@ -928,14 +949,6 @@ def main() -> None:
 
     candidate_bfs = parse_int_list(args.candidate_bfs)
     cache_ratios = parse_float_list(args.cdfshop_cache_ratios)
-    supported_bfs = set(SUPPORTED_BRANCH_FACTORS)
-    unsupported = [bf for bf in candidate_bfs if bf not in supported_bfs]
-    if unsupported:
-        raise RuntimeError(
-            f"candidate BFs are not compiled into exp/rmi_bench.cpp: {unsupported}. "
-            "Regenerate/update rmi_bench before using them."
-        )
-
     policies_csv = normalize_csv(args.policies)
     strategies_csv = normalize_csv(args.strategies)
     strategy_for_estimate = strategies_csv.split(",")[0]
@@ -951,6 +964,33 @@ def main() -> None:
     python_bin = Path(args.python_bin).expanduser()
     rmi_data_dir = (repo_root / args.rmi_data_dir).resolve() if not Path(args.rmi_data_dir).is_absolute() else Path(args.rmi_data_dir)
     rmi_results_dir = (repo_root / args.rmi_results_dir).resolve() if not Path(args.rmi_results_dir).is_absolute() else Path(args.rmi_results_dir)
+    rmi_generated_dir = (
+        (repo_root / args.rmi_generated_dir).resolve()
+        if not Path(args.rmi_generated_dir).is_absolute()
+        else Path(args.rmi_generated_dir)
+    )
+
+    supported_bfs = detect_available_rmi_bench_bfs(
+        generated_dir=rmi_generated_dir,
+        rmi_data_dir=rmi_data_dir,
+        rmi_prefix=args.rmi_name_prefix,
+    )
+    if not supported_bfs and args.dry_run:
+        supported_bfs = set(SUPPORTED_BRANCH_FACTORS)
+    if not supported_bfs:
+        raise RuntimeError(
+            "no generated RMI artifacts are available for rmi_bench. "
+            "Run exp/generate_rmi_headers.sh with the BF_LIST you want to benchmark."
+        )
+
+    unsupported = [bf for bf in candidate_bfs if bf not in supported_bfs]
+    if unsupported:
+        supported_text = ",".join(str(bf) for bf in sorted(supported_bfs))
+        raise RuntimeError(
+            f"candidate BFs are not available in generated rmi_bench artifacts: {unsupported}. "
+            f"Available BFs: {supported_text}. "
+            "Regenerate headers with a BF_LIST that includes them, then rebuild rmi_bench."
+        )
 
     validate_rmi_records_for_dataset(
         results_dir=rmi_results_dir,

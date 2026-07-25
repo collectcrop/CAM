@@ -52,26 +52,24 @@ add_executable(pgm_range_cache_simulate
     exp/pgm_range_cache_simulate.cpp
 )
 
-set(CAM_RMI_GENERATED_SOURCES
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_64.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_128.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_256.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_512.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1024.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2048.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_4096.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_8192.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_16384.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_32768.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_65536.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_131072.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_262144.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_524288.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1048576.cpp
-    src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2097152.cpp
+set(CAM_RMI_GENERATED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/rmi/rmi_eval/generated")
+set(CAM_RMI_SUPPORTED_BRANCH_FACTORS
+    64 128 256 512 1024 2048 4096 8192
+    16384 32768 65536 131072 262144 524288 1048576 2097152
 )
+set(CAM_RMI_GENERATED_SOURCES)
+set(CAM_RMI_EXPECTED_SOURCES)
+foreach(CAM_RMI_BF IN LISTS CAM_RMI_SUPPORTED_BRANCH_FACTORS)
+    set(CAM_RMI_SOURCE
+        "${CAM_RMI_GENERATED_DIR}/books_rmi_linear_spline_linear_${CAM_RMI_BF}.cpp"
+    )
+    list(APPEND CAM_RMI_EXPECTED_SOURCES "${CAM_RMI_SOURCE}")
+    if(EXISTS "${CAM_RMI_SOURCE}")
+        list(APPEND CAM_RMI_GENERATED_SOURCES "${CAM_RMI_SOURCE}")
+    endif()
+endforeach()
 
-set_source_files_properties(${CAM_RMI_GENERATED_SOURCES} PROPERTIES GENERATED TRUE)
+set_source_files_properties(${CAM_RMI_EXPECTED_SOURCES} PROPERTIES GENERATED TRUE)
 
 add_executable(rmi_bench EXCLUDE_FROM_ALL
     exp/rmi_bench.cpp
