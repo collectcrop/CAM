@@ -119,6 +119,10 @@ def replay_path(replay_dir: Path, dataset: str, workload: str, label: str, m_mib
     return replay_dir / dataset / f"{dataset}_{workload}_p{label}_M{m_mib}_{policy.upper()}_replay.csv"
 
 
+def lpm_path(lpm_dir: Path, dataset: str, workload: str, m_mib: int) -> Path:
+    return lpm_dir / dataset / f"{dataset}_{workload}_M{m_mib}_NONE_actual.csv"
+
+
 def sample_size(total_queries: int, fraction: float) -> int:
     if total_queries <= 0:
         raise ValueError("empty workload")
@@ -471,6 +475,92 @@ def load_cam_csv(path: Path, policy: str, strategy: str) -> pd.DataFrame:
     return out
 
 
+def load_lpm_csv(
+    path: Path,
+    dataset: str,
+    workload: str,
+    m_mib: int,
+    policy: str,
+    strategy: str,
+) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    require_columns(
+        df,
+        path,
+        {"epsilon", "policy", "strategy", "queries", "total_cache_misses", "simulate_wall_ns", "index_build_ns"},
+    )
+    out = df.copy()
+    out = out[out["policy"].astype(str).str.upper() == "NONE"].copy()
+    out = out[out["strategy"].astype(str) == strategy].copy()
+    out["method"] = "LPM"
+    out["dataset"] = dataset
+    out["dataset_label"] = dataset_label(dataset)
+    out["workload"] = workload
+    out["sample_rate_percent"] = 100.0
+    out["sample_fraction"] = 1.0
+    out["sample_label"] = "full"
+    out["M"] = int(m_mib)
+    out["epsilon"] = pd.to_numeric(out["epsilon"], errors="coerce").astype(int)
+    out["policy"] = policy.upper()
+    out["strategy"] = strategy
+    out["sample_queries"] = pd.to_numeric(out["queries"], errors="coerce").astype(int)
+    out["sample_total_ios"] = pd.to_numeric(out["total_cache_misses"], errors="coerce")
+    out["estimated_avg_io"] = out["sample_total_ios"] / out["sample_queries"]
+    out["estimate_core_time_s"] = pd.to_numeric(out["simulate_wall_ns"], errors="coerce") / 1e9
+    out["estimate_setup_time_s"] = pd.to_numeric(out["index_build_ns"], errors="coerce") / 1e9
+    out["estimate_time_s"] = out["estimate_core_time_s"] + out["estimate_setup_time_s"]
+    out["setup_time_shared"] = 0
+    return out[
+        [
+            "method", "dataset", "dataset_label", "workload", "sample_rate_percent",
+            "sample_fraction", "sample_label", "M", "epsilon", "policy", "strategy",
+            "sample_queries", "sample_total_ios", "estimated_avg_io", "estimate_core_time_s",
+            "estimate_setup_time_s", "estimate_time_s", "setup_time_shared",
+        ]
+    ]
+
+
+def make_simple_lpm_rows(
+    actual: pd.DataFrame,
+    epsilons: set[int],
+    items_per_page: int,
+) -> pd.DataFrame:
+    if items_per_page <= 0:
+        raise ValueError("simple-LPM items per page must be positive")
+    rows: list[dict[str, object]] = []
+    for _, actual_row in actual.iterrows():
+        epsilon = int(actual_row["epsilon"])
+        if epsilon not in epsilons:
+            continue
+        started = time.perf_counter_ns()
+        estimated_avg_io = 1.0 + 2.0 * epsilon / items_per_page
+        estimated_total_ios = estimated_avg_io * int(actual_row["actual_queries"])
+        elapsed_s = (time.perf_counter_ns() - started) / 1e9
+        rows.append(
+            {
+                "method": "simple-LPM",
+                "dataset": actual_row["dataset"],
+                "dataset_label": actual_row["dataset_label"],
+                "workload": actual_row["workload"],
+                "sample_rate_percent": 100.0,
+                "sample_fraction": 1.0,
+                "sample_label": "formula",
+                "M": int(actual_row["M"]),
+                "epsilon": epsilon,
+                "policy": actual_row["policy"],
+                "strategy": actual_row["strategy"],
+                "sample_queries": int(actual_row["actual_queries"]),
+                "sample_total_ios": estimated_total_ios,
+                "estimated_avg_io": estimated_avg_io,
+                "estimate_core_time_s": elapsed_s,
+                "estimate_setup_time_s": 0.0,
+                "estimate_time_s": elapsed_s,
+                "setup_time_shared": 0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def summarize_group(df: pd.DataFrame) -> dict[str, object]:
     first = df.iloc[0]
     method = str(first["method"])
@@ -518,6 +608,7 @@ def cmd_summarize(args: argparse.Namespace) -> None:
 
     actual_frames: list[pd.DataFrame] = []
     replay_frames: list[pd.DataFrame] = []
+    lpm_frames: list[pd.DataFrame] = []
 
     for dataset in args.datasets:
         for m_mib in args.memory_list:
@@ -525,6 +616,11 @@ def cmd_summarize(args: argparse.Namespace) -> None:
             if not act.exists():
                 raise FileNotFoundError(f"missing actual CSV: {act}")
             actual_frames.append(load_actual_csv(act, dataset, args.workload, args.policy, args.strategy))
+
+            lpm = lpm_path(args.lpm_dir, dataset, args.workload, m_mib)
+            if not lpm.exists():
+                raise FileNotFoundError(f"missing LPM wocache CSV: {lpm}")
+            lpm_frames.append(load_lpm_csv(lpm, dataset, args.workload, m_mib, args.policy, args.strategy))
 
             for rate in rates:
                 label = str(rate["sample_label"])
@@ -540,7 +636,9 @@ def cmd_summarize(args: argparse.Namespace) -> None:
 
     replay = pd.concat(replay_frames, ignore_index=True)
     cam = load_cam_csv(args.cam_csv, args.policy, args.strategy)
-    estimate = pd.concat([replay, cam], ignore_index=True, sort=False)
+    lpm = pd.concat(lpm_frames, ignore_index=True)
+    simple_lpm = make_simple_lpm_rows(actual, eps_set, args.simple_lpm_items_per_page)
+    estimate = pd.concat([replay, cam, lpm, simple_lpm], ignore_index=True, sort=False)
     estimate["epsilon"] = pd.to_numeric(estimate["epsilon"], errors="coerce").astype(int)
     estimate["M"] = pd.to_numeric(estimate["M"], errors="coerce").astype(int)
     estimate = estimate[estimate["epsilon"].isin(eps_set)].copy()
@@ -555,13 +653,47 @@ def cmd_summarize(args: argparse.Namespace) -> None:
     merged["estimated_total_ios"] = pd.to_numeric(merged["estimated_avg_io"], errors="coerce") * pd.to_numeric(
         merged["actual_queries"], errors="coerce"
     )
+    replay100 = merged[
+        (merged["method"] == "replay")
+        & np.isclose(pd.to_numeric(merged["sample_rate_percent"], errors="coerce"), 100.0)
+    ][keys + ["estimated_total_ios"]].rename(columns={"estimated_total_ios": "replay100_total_ios"})
+    if replay100.duplicated(keys).any():
+        raise ValueError("multiple Replay-100 truth rows found for the same configuration")
+    merged = merged.merge(replay100, on=keys, how="left")
+    baseline_mask = merged["method"].isin(["LPM", "simple-LPM"])
+    if merged.loc[baseline_mask, "replay100_total_ios"].isna().any():
+        raise ValueError("missing Replay-100 truth for LPM/simple-LPM rows; include sample rate 100")
+    merged.loc[baseline_mask, "actual_total_ios"] = merged.loc[baseline_mask, "replay100_total_ios"]
+    merged.loc[baseline_mask, "actual_avg_io"] = (
+        merged.loc[baseline_mask, "actual_total_ios"] / merged.loc[baseline_mask, "actual_queries"]
+    )
     actual_ios = pd.to_numeric(merged["actual_total_ios"], errors="coerce")
     estimated_ios = pd.to_numeric(merged["estimated_total_ios"], errors="coerce")
     merged["absolute_error"] = (estimated_ios - actual_ios).abs()
     merged["signed_relative_error"] = np.where(actual_ios > 0, (estimated_ios - actual_ios) / actual_ios, np.nan)
     merged["relative_error"] = merged["signed_relative_error"].abs()
+    merged["q_error"] = np.where(
+        (actual_ios > 0) & (estimated_ios > 0),
+        np.maximum(estimated_ios / actual_ios, actual_ios / estimated_ios),
+        np.nan,
+    )
     merged["accuracy"] = np.where(actual_ios > 0, 1.0 - merged["relative_error"], np.nan)
     merged["accuracy"] = merged["accuracy"].clip(lower=0.0, upper=1.0)
+
+    simple_results = merged[merged["method"] == "simple-LPM"].sort_values(
+        ["dataset_label", "M", "epsilon"], kind="stable"
+    )
+    for _, row in simple_results.iterrows():
+        print(
+            "[simple-LPM] "
+            f"dataset={row['dataset']} M={int(row['M'])}MiB epsilon={int(row['epsilon'])} "
+            f"avg_dac={float(row['estimated_avg_io']):.10f} "
+            f"estimated_ios={float(row['estimated_total_ios']):.6f} "
+            f"replay100_ios={float(row['actual_total_ios']):.6f} "
+            f"relative_error={float(row['relative_error']):.10f} "
+            f"q_error={float(row['q_error']):.10f} "
+            f"time_s={float(row['estimate_time_s']):.9f}"
+        )
 
     group_keys = [
         "method",
@@ -645,6 +777,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(p_sum)
     add_sample_args(p_sum)
     p_sum.add_argument("--actual-dir", type=Path, required=True)
+    p_sum.add_argument("--lpm-dir", type=Path, required=True)
     p_sum.add_argument("--replay-dir", type=Path, required=True)
     p_sum.add_argument("--cam-csv", type=Path, required=True)
     p_sum.add_argument("--output-dir", type=Path, required=True)
@@ -652,6 +785,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sum.add_argument("--epsilons", required=True)
     p_sum.add_argument("--policy", default="LRU")
     p_sum.add_argument("--strategy", default="all_in_once")
+    p_sum.add_argument("--simple-lpm-items-per-page", type=int, default=512)
     p_sum.set_defaults(func=cmd_summarize)
 
     p_label = sub.add_parser("sample-label", help="Print normalized sample-rate filename labels.")

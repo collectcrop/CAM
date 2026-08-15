@@ -319,6 +319,24 @@ fn main() {
             trained_model.model_max_error,
             trained_model.model_max_error as f64 / num_rows as f64 * 100.0
         );
+
+        if let Some(stats_file) = matches.value_of("stats-file") {
+            let stats = object! {
+                "layers" => trained_model.models.clone(),
+                "branching factor" => trained_model.branching_factor,
+                "size" => rmi_lib::rmi_size(&trained_model),
+                "average error" => trained_model.model_avg_error,
+                "average l2 error" => trained_model.model_avg_l2_error,
+                "average log2 error" => trained_model.model_avg_log2_error,
+                "max error" => trained_model.model_max_error,
+                "max log2 error" => trained_model.model_max_log2_error
+            };
+            let f = File::create(stats_file)
+                .expect("Could not create RMI statistics file");
+            let mut bw = BufWriter::new(f);
+            stats.write(&mut bw)
+                .expect("Could not write RMI statistics file");
+        }
         
         if !matches.is_present("no-code") {
             if matches.is_present("zero-build-time") {

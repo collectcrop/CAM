@@ -33,11 +33,18 @@ struct ProbeSpec {
     uint64_t len = 0;
 };
 
+struct OuterRecord {
+    uint64_t key = 0;
+    uint64_t row_id = 0;
+};
+
 enum class ExecutionMode {
     HYBRID,
     POINT,
     RANGE,
-    INLJ
+    INLJ,
+    HASH,
+    SORT_MERGE
 };
 
 struct Config {
@@ -51,12 +58,13 @@ struct Config {
     ExecutionMode mode = ExecutionMode::HYBRID;
     size_t epsilon = 16;
     size_t memory_budget_bytes = 256ULL << 20;
-    size_t sort_budget_bytes = 32ULL << 20;
+    size_t sort_budget_bytes = 0;
     size_t total_keys = 0;
     CachePolicy policy = CachePolicy::LRU;
     bool append_output = false;
     bool sort_queries = true;
     bool keep_sorted_file = false;
+    bool sort_budget_explicit = false;
 };
 
 struct Counter {
@@ -87,6 +95,16 @@ struct Counter {
         bytes_read += metrics.bytes_read;
         io_ns += metrics.io_ns;
     }
+
+    void add(const cam::storage::DiskStats& stats) {
+        page_requests += stats.page_requests;
+        cache_hits += stats.cache_hits;
+        cache_misses += stats.cache_misses;
+        logical_ios += stats.logical_page_reads;
+        physical_ios += stats.physical_read_ops;
+        bytes_read += stats.bytes_read;
+        io_ns += stats.io_ns;
+    }
 };
 
 struct RunResult {
@@ -105,7 +123,9 @@ struct RunResult {
     size_t range_queries = 0;
     size_t matched_records = 0;
     uint64_t checksum = 0;
+    uint64_t record_checksum = 0;
     cam::sort::SortStats sort;
+    long long partition_load_ns = 0;
     long long query_wall_ns = 0;
     long long wall_ns = 0;
 
@@ -118,10 +138,11 @@ struct RunResult {
     throw std::invalid_argument(
         msg +
         "\nUsage: ./pgm_hybrid_join --data <file> --queries <file>"
-        " --output <csv> [--mode <hybrid|point|range|inlj>]"
+        " --output <csv> [--mode <hybrid|point|range|inlj|hash|sortmerge>]"
         " [--par <file> --bitmap <file>]"
         " [--label <name>] [--epsilon <n>] [--M <MiB>] [--keys <n>]"
-        " [--sort-M <MiB>] [--work-dir <dir>]  # --sort-M accepts decimals, e.g. 0.5"
+        " [--sort-M <MiB>] [--work-dir <dir>]"
+        "  # default sort budget matches the hash table; --sort-M overrides it"
         " [--policy <lru|fifo|lfu|none>] [--append] [--keep-sorted-file] [--no-sort-queries]");
 }
 
@@ -135,6 +156,59 @@ size_t detect_record_count(const std::string& filename) {
 
 size_t safe_subtract(size_t lhs, size_t rhs) {
     return lhs > rhs ? lhs - rhs : 0;
+}
+
+size_t checked_size_add(size_t lhs, size_t rhs, const char* description) {
+    if (rhs > std::numeric_limits<size_t>::max() - lhs) {
+        throw std::overflow_error(std::string(description) + " size overflow");
+    }
+    return lhs + rhs;
+}
+
+size_t checked_size_multiply(size_t count, size_t width, const char* description) {
+    if (width != 0 && count > std::numeric_limits<size_t>::max() / width) {
+        throw std::overflow_error(std::string(description) + " size overflow");
+    }
+    return count * width;
+}
+
+uint64_t splitmix64_hash(uint64_t key) noexcept {
+    uint64_t mixed = key + 0x9e3779b97f4a7c15ULL;
+    mixed = (mixed ^ (mixed >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+    mixed = (mixed ^ (mixed >> 27U)) * 0x94d049bb133111ebULL;
+    return mixed ^ (mixed >> 31U);
+}
+
+size_t hash_bucket_count(size_t outer_records) {
+    if (outer_records == 0) {
+        return 0;
+    }
+
+    const size_t quarter_records = outer_records / 4 + (outer_records % 4 != 0);
+    return checked_size_add(
+        outer_records, quarter_records, "hash bucket count");
+}
+
+size_t hash_table_storage_bytes(size_t outer_records) {
+    // Keep this estimate aligned with run_hash_join: 1.25 buckets per outer
+    // tuple, one chain link per tuple, and one materialized OuterRecord.
+    const size_t bucket_count = hash_bucket_count(outer_records);
+    const size_t bucket_bytes = checked_size_multiply(
+        bucket_count, sizeof(uint32_t), "hash bucket array");
+    const size_t link_bytes = checked_size_multiply(
+        outer_records, sizeof(uint32_t), "hash chain array");
+    const size_t record_bytes = checked_size_multiply(
+        outer_records, sizeof(OuterRecord), "hash record array");
+    return checked_size_add(
+        checked_size_add(bucket_bytes, link_bytes, "hash table"),
+        record_bytes,
+        "hash table");
+}
+
+size_t automatic_sort_budget_bytes(size_t outer_records) {
+    return std::max(
+        cam::sort::kMinSortBytes,
+        hash_table_storage_bytes(outer_records));
 }
 
 void ensure_parent_dir(const std::string& path) {
@@ -161,6 +235,10 @@ ExecutionMode parse_execution_mode(const std::string& value) {
     if (token == "POINT") return ExecutionMode::POINT;
     if (token == "RANGE") return ExecutionMode::RANGE;
     if (token == "INLJ") return ExecutionMode::INLJ;
+    if (token == "HASH" || token == "HASHJOIN") return ExecutionMode::HASH;
+    if (token == "SORTMERGE" || token == "SORTMERGEJOIN" || token == "SMJ") {
+        return ExecutionMode::SORT_MERGE;
+    }
     throw std::invalid_argument("unknown execution mode: " + value);
 }
 
@@ -170,6 +248,8 @@ std::string execution_mode_name(ExecutionMode mode) {
         case ExecutionMode::POINT: return "point";
         case ExecutionMode::RANGE: return "range";
         case ExecutionMode::INLJ: return "inlj";
+        case ExecutionMode::HASH: return "hash";
+        case ExecutionMode::SORT_MERGE: return "sortmerge";
         default: return "unknown";
     }
 }
@@ -177,7 +257,8 @@ std::string execution_mode_name(ExecutionMode mode) {
 bool mode_requires_sorted_workload(ExecutionMode mode) {
     return mode == ExecutionMode::HYBRID ||
            mode == ExecutionMode::POINT ||
-           mode == ExecutionMode::RANGE;
+           mode == ExecutionMode::RANGE ||
+           mode == ExecutionMode::SORT_MERGE;
 }
 
 fs::path make_mode_work_dir(const Config& cfg) {
@@ -350,6 +431,7 @@ Config parse_args(int argc, char** argv) {
             cfg.memory_budget_bytes = std::stoull(require("--M")) << 20;
         } else if (arg == "--sort-M") {
             cfg.sort_budget_bytes = parse_mib_bytes(require("--sort-M"), "--sort-M");
+            cfg.sort_budget_explicit = true;
         } else if (arg == "--work-dir") {
             cfg.work_dir = require("--work-dir");
         } else if (arg == "--keys") {
@@ -378,10 +460,6 @@ Config parse_args(int argc, char** argv) {
     }
     if (cfg.mode == ExecutionMode::RANGE && !cfg.sort_queries) {
         usage_error("range mode requires sorted workload for streaming query processing");
-    }
-    if (mode_requires_sorted_workload(cfg.mode) && cfg.sort_queries &&
-        cfg.sort_budget_bytes < cam::sort::kMinSortBytes) {
-        usage_error("--sort-M is too small for external merge sort");
     }
     if (cfg.output_path.empty()) usage_error("--output is required");
     if (cfg.total_keys == 0) {
@@ -548,7 +626,11 @@ StreamRangeResult run_range_query_streamed(
             if (current_query == record_it->key) {
                 ++result.matched_records;
                 result.checksum += record_it->key;
-                ++record_it;
+                // Keep the unique inner record in place so duplicate outer
+                // keys each contribute one join result.
+                if (!advance_query()) {
+                    return result;
+                }
             } else {
                 record_it = std::lower_bound(record_it, record_end, current_query, record_less_key);
             }
@@ -564,6 +646,7 @@ RunResult run_hybrid_join(
     const cam::storage::KeyFileLayout& data_layout,
     const QueryWorkload& workload,
     const std::vector<ProbeSpec>& specs,
+    long long partition_load_ns,
     const Config& cfg,
     size_t index_bytes)
 {
@@ -575,6 +658,7 @@ RunResult run_hybrid_join(
     st.index_bytes = index_bytes;
     st.cache_bytes = safe_subtract(cfg.memory_budget_bytes, index_bytes);
     st.sort = workload.sort;
+    st.partition_load_ns = partition_load_ns;
     st.queries = workload.layout.total_keys;
     st.partitions = specs.size();
 
@@ -622,7 +706,7 @@ RunResult run_hybrid_join(
 
     const auto t1 = Clock::now();
     st.query_wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-    st.wall_ns = st.sort.wall_ns + st.query_wall_ns;
+    st.wall_ns = st.partition_load_ns + st.sort.wall_ns + st.query_wall_ns;
     return st;
 }
 
@@ -709,15 +793,148 @@ RunResult run_single_range_join(
     return st;
 }
 
+RunResult make_baseline_result(const QueryWorkload& workload, const Config& cfg) {
+    RunResult st;
+    st.label = cfg.label;
+    st.mode = cfg.mode;
+    // Sequential baselines bypass the page cache; report the policy actually used.
+    st.policy = CachePolicy::NONE;
+    st.epsilon = cfg.epsilon;
+    st.sort = workload.sort;
+    st.queries = workload.layout.total_keys;
+    st.partitions = workload.layout.total_keys == 0 ? 0 : 1;
+    return st;
+}
+
+std::vector<KeyT> load_full_relation(
+    const cam::storage::KeyFileLayout& layout,
+    Counter& io)
+{
+    const auto t0 = Clock::now();
+    auto keys = cam::storage::load_key_file_keys(layout);
+    const auto t1 = Clock::now();
+
+    const uint64_t pages = static_cast<uint64_t>(layout.logical_pages);
+    io.page_requests += pages;
+    io.cache_misses += pages;
+    io.logical_ios += pages;
+    io.physical_ios += layout.total_keys == 0 ? 0 : 1;
+    io.bytes_read += static_cast<uint64_t>(layout.logical_bytes());
+    io.io_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    return keys;
+}
+
+RunResult run_hash_join(
+    const cam::storage::KeyFileLayout& data_layout,
+    const QueryWorkload& workload,
+    const Config& cfg)
+{
+    RunResult st = make_baseline_result(workload, cfg);
+    st.point_partitions = st.partitions;
+    st.point_queries = st.queries;
+
+    const auto t0 = Clock::now();
+    // Both relations are loaded by one contiguous read each before execution.
+    auto inner = load_full_relation(data_layout, st.total);
+    auto outer = load_full_relation(workload.layout, st.total);
+
+
+    // Store one hash-table entry per outer tuple. In particular, duplicate
+    // keys remain distinct records and retain a stable id from the input file.
+    constexpr uint32_t kNoEntry = std::numeric_limits<uint32_t>::max();
+    if (outer.size() >= kNoEntry) {
+        throw std::length_error("outer relation exceeds 32-bit hash entry capacity");
+    }
+    const size_t bucket_count = hash_bucket_count(outer.size());
+    std::vector<uint32_t> bucket_heads(bucket_count, kNoEntry);
+    std::vector<uint32_t> next_entry;
+    std::vector<OuterRecord> outer_records;
+    next_entry.reserve(outer.size());
+    outer_records.reserve(outer.size());
+
+    for (size_t row_id = 0; row_id < outer.size(); ++row_id) {
+        const KeyT key = outer[row_id];
+        const size_t bucket = splitmix64_hash(key) % bucket_count;
+        outer_records.push_back(OuterRecord{key, static_cast<uint64_t>(row_id)});
+        next_entry.push_back(bucket_heads[bucket]);
+        bucket_heads[bucket] = static_cast<uint32_t>(row_id);
+    }
+    // The key-only input copy is no longer needed after tuple materialization.
+    std::vector<KeyT>().swap(outer);
+
+    for (KeyT inner_key : inner) {
+        if (bucket_count == 0) {
+            break;
+        }
+        const size_t bucket = splitmix64_hash(inner_key) % bucket_count;
+        for (uint32_t entry = bucket_heads[bucket];
+             entry != kNoEntry;
+             entry = next_entry[entry]) {
+            const OuterRecord& outer_record = outer_records[entry];
+            if (outer_record.key != inner_key) {
+                continue;
+            }
+            ++st.matched_records;
+            // Preserve the legacy key checksum for cross-strategy validation,
+            // and separately consume record identity so duplicate tuple work
+            // cannot be folded into a single count update.
+            st.checksum += inner_key;
+            st.record_checksum += outer_record.row_id + 1;
+        }
+    }
+    const auto t1 = Clock::now();
+
+    st.point = st.total;
+    st.query_wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    st.wall_ns = st.sort.wall_ns + st.query_wall_ns;
+    return st;
+}
+
+RunResult run_sort_merge_join(
+    const cam::storage::KeyFileLayout& data_layout,
+    const QueryWorkload& workload,
+    const Config& cfg)
+{
+    RunResult st = make_baseline_result(workload, cfg);
+    st.range_partitions = st.partitions;
+    st.range_queries = st.queries;
+
+    const auto t0 = Clock::now();
+    // The outer layout is the sorted output produced by prepare_execution_queries.
+    auto inner = load_full_relation(data_layout, st.total);
+    auto outer = load_full_relation(workload.layout, st.total);
+    size_t inner_idx = 0;
+    size_t outer_idx = 0;
+    while (outer_idx < outer.size() && inner_idx < inner.size()) {
+        const KeyT outer_key = outer[outer_idx];
+        const KeyT inner_key = inner[inner_idx];
+        if (outer_key < inner_key) {
+            ++outer_idx;
+        } else if (inner_key < outer_key) {
+            ++inner_idx;
+        } else {
+            ++st.matched_records;
+            st.checksum += outer_key;
+            ++outer_idx;
+        }
+    }
+    const auto t1 = Clock::now();
+
+    st.range = st.total;
+    st.query_wall_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+    st.wall_ns = st.sort.wall_ns + st.query_wall_ns;
+    return st;
+}
+
 void write_header(std::ostream& out) {
     out
         << "label,mode,epsilon,policy,queries,partitions,point_partitions,range_partitions,"
         << "point_queries,range_queries,matched_records,"
         << "page_requests,cache_hits,cache_misses,hit_ratio,"
         << "logical_ios,physical_ios,avg_logical_ios,avg_physical_ios,"
-        << "bytes_read,io_ns,sort_wall_ns,query_wall_ns,wall_ns,throughput_qps,"
+        << "bytes_read,io_ns,partition_load_ns,sort_wall_ns,query_wall_ns,wall_ns,throughput_qps,"
         << "index_bytes,cache_bytes,sort_budget_bytes,sort_initial_runs,sort_merge_passes,"
-        << "sort_runs_written,sort_input_bytes,sort_output_bytes,checksum\n";
+        << "sort_runs_written,sort_input_bytes,sort_output_bytes,checksum,record_checksum\n";
 }
 
 void write_row(std::ostream& out, const RunResult& st) {
@@ -756,6 +973,7 @@ void write_row(std::ostream& out, const RunResult& st) {
         << avg_pio << ','
         << st.total.bytes_read << ','
         << st.total.io_ns << ','
+        << st.partition_load_ns << ','
         << st.sort.wall_ns << ','
         << st.query_wall_ns << ','
         << st.wall_ns << ','
@@ -768,7 +986,8 @@ void write_row(std::ostream& out, const RunResult& st) {
         << st.sort.runs_written << ','
         << st.sort.input_bytes << ','
         << st.sort.output_bytes << ','
-        << st.checksum
+        << st.checksum << ','
+        << st.record_checksum
         << '\n';
 }
 
@@ -778,6 +997,7 @@ void run_epsilon(
     const std::vector<KeyT>& data,
     const QueryWorkload& workload,
     const std::vector<ProbeSpec>& specs,
+    long long partition_load_ns,
     const Config& cfg,
     std::ostream& out)
 {
@@ -787,7 +1007,8 @@ void run_epsilon(
     RunResult st;
     switch (cfg.mode) {
         case ExecutionMode::HYBRID:
-            st = run_hybrid_join(index, data_layout, workload, specs, cfg, index_bytes);
+            st = run_hybrid_join(
+                index, data_layout, workload, specs, partition_load_ns, cfg, index_bytes);
             break;
         case ExecutionMode::POINT:
             st = run_point_join(index, data_layout, workload, cfg, index_bytes);
@@ -798,6 +1019,9 @@ void run_epsilon(
         case ExecutionMode::INLJ:
             st = run_point_join(index, data_layout, workload, cfg, index_bytes);
             break;
+        case ExecutionMode::HASH:
+        case ExecutionMode::SORT_MERGE:
+            throw std::logic_error("non-index join reached PGM dispatch");
     }
     write_row(out, st);
 }
@@ -807,24 +1031,28 @@ void dispatch_epsilon(
     const std::vector<KeyT>& data,
     const QueryWorkload& workload,
     const std::vector<ProbeSpec>& specs,
+    long long partition_load_ns,
     const Config& cfg,
     std::ostream& out)
 {
     switch (cfg.epsilon) {
-        case 4: run_epsilon<4>(data_layout, data, workload, specs, cfg, out); break;
-        case 8: run_epsilon<8>(data_layout, data, workload, specs, cfg, out); break;
-        case 10: run_epsilon<10>(data_layout, data, workload, specs, cfg, out); break;
-        case 12: run_epsilon<12>(data_layout, data, workload, specs, cfg, out); break;
-        case 14: run_epsilon<14>(data_layout, data, workload, specs, cfg, out); break;
-        case 16: run_epsilon<16>(data_layout, data, workload, specs, cfg, out); break;
-        case 20: run_epsilon<20>(data_layout, data, workload, specs, cfg, out); break;
-        case 24: run_epsilon<24>(data_layout, data, workload, specs, cfg, out); break;
-        case 28: run_epsilon<28>(data_layout, data, workload, specs, cfg, out); break;
-        case 32: run_epsilon<32>(data_layout, data, workload, specs, cfg, out); break;
-        case 48: run_epsilon<48>(data_layout, data, workload, specs, cfg, out); break;
-        case 64: run_epsilon<64>(data_layout, data, workload, specs, cfg, out); break;
-        case 96: run_epsilon<96>(data_layout, data, workload, specs, cfg, out); break;
-        case 128: run_epsilon<128>(data_layout, data, workload, specs, cfg, out); break;
+#define RUN_EPSILON(E) run_epsilon<E>( \
+            data_layout, data, workload, specs, partition_load_ns, cfg, out)
+        case 4: RUN_EPSILON(4); break;
+        case 8: RUN_EPSILON(8); break;
+        case 10: RUN_EPSILON(10); break;
+        case 12: RUN_EPSILON(12); break;
+        case 14: RUN_EPSILON(14); break;
+        case 16: RUN_EPSILON(16); break;
+        case 20: RUN_EPSILON(20); break;
+        case 24: RUN_EPSILON(24); break;
+        case 28: RUN_EPSILON(28); break;
+        case 32: RUN_EPSILON(32); break;
+        case 48: RUN_EPSILON(48); break;
+        case 64: RUN_EPSILON(64); break;
+        case 96: RUN_EPSILON(96); break;
+        case 128: RUN_EPSILON(128); break;
+#undef RUN_EPSILON
         default:
             throw std::invalid_argument("unsupported epsilon: " + std::to_string(cfg.epsilon));
     }
@@ -834,23 +1062,35 @@ void dispatch_epsilon(
 
 int main(int argc, char** argv) {
     try {
-        const Config cfg = parse_args(argc, argv);
+        Config cfg = parse_args(argc, argv);
         const auto data_layout = cam::storage::detect_key_file_layout(
             cfg.data_path,
             cfg.total_keys,
             cam::storage::HeaderMode::NO);
 
-        auto data = load_data_pgm_safe<KeyT>(cfg.data_path, cfg.total_keys);
         const auto query_layout = cam::storage::detect_key_file_layout(
             cfg.query_path,
             0,
             cam::storage::HeaderMode::NO);
+        if (!cfg.sort_budget_explicit) {
+            cfg.sort_budget_bytes = automatic_sort_budget_bytes(
+                query_layout.total_keys);
+        }
+        if (mode_requires_sorted_workload(cfg.mode) && cfg.sort_queries &&
+            cfg.sort_budget_bytes < cam::sort::kMinSortBytes) {
+            usage_error("--sort-M is too small for external merge sort");
+        }
         QueryWorkload workload = prepare_execution_queries(cfg, query_layout);
 
         std::vector<ProbeSpec> specs;
+        long long partition_load_ns = 0;
         if (cfg.mode == ExecutionMode::HYBRID) {
+            const auto partition_t0 = Clock::now();
             specs = load_specs(cfg.par_path, cfg.bitmap_path);
             validate_specs(specs, workload.layout.total_keys);
+            const auto partition_t1 = Clock::now();
+            partition_load_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                partition_t1 - partition_t0).count();
         }
 
         ensure_parent_dir(cfg.output_path);
@@ -864,7 +1104,15 @@ int main(int argc, char** argv) {
             write_header(out);
         }
 
-        dispatch_epsilon(data_layout, data, workload, specs, cfg, out);
+        if (cfg.mode == ExecutionMode::HASH) {
+            write_row(out, run_hash_join(data_layout, workload, cfg));
+        } else if (cfg.mode == ExecutionMode::SORT_MERGE) {
+            write_row(out, run_sort_merge_join(data_layout, workload, cfg));
+        } else {
+            auto data = load_data_pgm_safe<KeyT>(cfg.data_path, cfg.total_keys);
+            dispatch_epsilon(
+                data_layout, data, workload, specs, partition_load_ns, cfg, out);
+        }
         cleanup_query_workload(workload);
         return 0;
     } catch (const std::exception& e) {

@@ -35,36 +35,32 @@ def expected_DAC(epsilon: int, ipp: int, strategy: str = "all_in_once") -> float
 def load_rmi_query_records(path: str, delimiter: str = ",") -> Dict[str, np.ndarray]:
     path = str(path)
     with open(path, "r", newline="") as f:
-        header = None
-        for raw_line in f:
-            if not raw_line.strip() or raw_line.lstrip().startswith("#"):
-                continue
-            header = next(csv.reader([raw_line], delimiter=delimiter))
-            break
-
-        if header is None:
+        filtered_rows = (
+            line for line in f
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+        reader = csv.DictReader(filtered_rows, delimiter=delimiter)
+        if reader.fieldnames is None:
             raise ValueError(f"No CSV header found in {path}")
-        fields = {
-            name.strip().lower(): index
-            for index, name in enumerate(header)
-        }
+        fields = {name.strip().lower(): name for name in reader.fieldnames}
+
         required = ["true_pos", "leaf_id", "err"]
-        missing = [name for name in required if name not in fields]
+        missing = [c for c in required if c not in fields]
         if missing:
             raise ValueError(f"Missing required columns {missing} in {path}")
 
-        data = np.loadtxt(
-            f,
-            delimiter=delimiter,
-            usecols=tuple(fields[name] for name in required),
-            dtype=np.int64,
-            ndmin=2,
-        )
+        pos_list = []
+        leaf_list = []
+        err_list = []
+        for row in reader:
+            pos_list.append(int(row[fields["true_pos"]]))
+            leaf_list.append(int(row[fields["leaf_id"]]))
+            err_list.append(int(row[fields["err"]]))
 
     return {
-        "pos": data[:, 0].copy(),
-        "leaf": data[:, 1].copy(),
-        "err": data[:, 2].copy(),
+        "pos": np.asarray(pos_list, dtype=np.int64),
+        "leaf": np.asarray(leaf_list, dtype=np.int64),
+        "err": np.asarray(err_list, dtype=np.int64),
     }
 
 

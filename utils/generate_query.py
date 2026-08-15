@@ -225,6 +225,79 @@ def sample_unique_mixture(
 
     return chosen
 
+
+def sample_mixture_with_replacement(
+    keys, k, seed=42,
+    hotpot_ratio=0.4, zipf_ratio=0.3, uniform_ratio=0.3,
+    num_hotpots=5, hotpot_frac=0.01,
+    hotpot_zipf_a=1.5, zipf_a=1.2,
+    return_sorted=True,
+    batch_size=4_000_000,
+):
+    """Sample a mixture of dataset keys with replacement in bounded batches."""
+    keys = np.asarray(keys, dtype=np.uint64)
+    n = len(keys)
+    if n == 0:
+        raise ValueError("keys is empty")
+    if k < 0:
+        raise ValueError("k must be non-negative")
+    if num_hotpots <= 0:
+        raise ValueError("num_hotpots must be positive")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    ratios = np.array([hotpot_ratio, zipf_ratio, uniform_ratio], dtype=float)
+    if np.any(ratios < 0) or not np.isclose(ratios.sum(), 1.0):
+        raise ValueError("hotpot_ratio + zipf_ratio + uniform_ratio must equal 1")
+
+    rng = np.random.default_rng(seed)
+    py_rng = random.Random(seed)
+    counts = [int(k * hotpot_ratio), int(k * zipf_ratio)]
+    counts.append(k - counts[0] - counts[1])
+    chosen = np.empty(k, dtype=np.uint64)
+    offset = 0
+
+    def append_indices(make_indices, count):
+        nonlocal offset
+        remaining = count
+        while remaining > 0:
+            batch = min(batch_size, remaining)
+            idx = make_indices(batch)
+            chosen[offset:offset + batch] = keys[idx]
+            offset += batch
+            remaining -= batch
+
+    hot_count = counts[0]
+    if hot_count:
+        hotpot_size = max(1, int(hotpot_frac * n))
+        per_hotpot, extra = divmod(hot_count, num_hotpots)
+        for hotpot_id in range(num_hotpots):
+            count = per_hotpot + (1 if hotpot_id < extra else 0)
+            base = py_rng.randint(0, max(0, n - hotpot_size))
+            append_indices(
+                lambda batch, base=base: base + np.clip(
+                    rng.zipf(hotpot_zipf_a, size=batch) - 1,
+                    0,
+                    hotpot_size - 1,
+                ),
+                count,
+            )
+
+    append_indices(
+        lambda batch: np.clip(rng.zipf(zipf_a, size=batch) - 1, 0, n - 1),
+        counts[1],
+    )
+    append_indices(
+        lambda batch: rng.integers(0, n, size=batch, endpoint=False),
+        counts[2],
+    )
+
+    if return_sorted:
+        chosen.sort()
+    else:
+        rng.shuffle(chosen)
+    return chosen
+
 def _compute_page_intervals(keys, queries, epsilon, ipp):
     idx = np.searchsorted(keys, queries, side="left")
     idx = np.clip(idx, 0, len(keys) - 1).astype(np.int64)

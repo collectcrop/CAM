@@ -46,7 +46,7 @@ def default_python_bin() -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compare a CDFShop optimizer-selected RMI configuration against "
+            "Compare a CDFShop optimizer-selected RMI branch factor against "
             "an optimalBF-selected branch factor under the same memory budget."
         )
     )
@@ -85,31 +85,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rmi-name-prefix",
         default="books_rmi_linear_spline_linear",
-        help="Prefix for optimalBF collector CSVs, e.g. '<prefix>_<BF>.csv'.",
+        help="Prefix for collector CSVs, e.g. '<prefix>_<BF>.csv'.",
     )
     parser.add_argument(
         "--rmi-layers",
         default="linear_spline,linear",
-        help="RMI layer pair used by the optimalBF candidates.",
-    )
-    parser.add_argument(
-        "--rmi-namespace-prefix",
-        default=None,
-        help=(
-            "Dataset-specific namespace prefix used when generating CDFShop-selected "
-            "models. Default: infer from --rmi-name-prefix and --rmi-layers."
-        ),
-    )
-    parser.add_argument(
-        "--rmi-generator",
-        default="exp/generate_rmi_headers.sh",
-        help="Script used to generate missing CDFShop-selected RMI artifacts.",
-    )
-    parser.add_argument("--build-jobs", type=int, default=max(1, os.cpu_count() or 1))
-    parser.add_argument(
-        "--skip-cdfshop-rmi-prepare",
-        action="store_true",
-        help="Require CDFShop-selected artifacts to exist instead of generating them.",
+        help="Compiled RMI layer pair, for example robust_linear,linear.",
     )
     parser.add_argument("--output-dir", default="build/log/rmi_tuner_cache_compare")
     parser.add_argument("--dataset-tag", default=None)
@@ -287,243 +268,6 @@ def detect_available_rmi_bench_bfs(
         ):
             available.add(bf)
     return available
-
-
-def rmi_model_tag(layers: str) -> str:
-    tag = layers.replace(",", "_").replace("-", "_")
-    if not tag or any(not (char.isalnum() or char == "_") for char in tag):
-        raise ValueError(f"invalid RMI layers for namespace generation: {layers!r}")
-    return tag
-
-
-def infer_rmi_namespace_prefix(rmi_name_prefix: str, rmi_layers: str) -> str:
-    suffix = f"_{rmi_model_tag(rmi_layers)}"
-    if not rmi_name_prefix.endswith(suffix):
-        raise ValueError(
-            "--rmi-name-prefix must end with the model tag derived from --rmi-layers "
-            f"({suffix!r}), or --rmi-namespace-prefix must be provided explicitly"
-        )
-    return rmi_name_prefix[: -len(suffix)]
-
-
-def rmi_namespace(namespace_prefix: str, layers: str, branch_factor: int) -> str:
-    return f"{namespace_prefix}_{rmi_model_tag(layers)}_{branch_factor}"
-
-
-def load_rmi_stats(path: Path) -> dict[str, Any]:
-    with path.open() as stream:
-        payload = json.load(stream)
-    if not isinstance(payload, dict):
-        raise ValueError(f"unexpected RMI stats JSON shape in {path}")
-    return payload
-
-
-def validate_cdfshop_rmi_artifact(
-    *,
-    generated_dir: Path,
-    rmi_data_dir: Path,
-    namespace: str,
-    layers: str,
-    branch_factor: int,
-    optimizer_size_bytes: int,
-) -> dict[str, Any]:
-    required = [
-        generated_dir / f"{namespace}.h",
-        generated_dir / f"{namespace}.cpp",
-        generated_dir / f"{namespace}_data.h",
-        generated_dir / f"{namespace}.stats.json",
-        rmi_data_dir / f"{namespace}_L1_PARAMETERS",
-    ]
-    missing = [str(path) for path in required if not path.exists()]
-    if missing:
-        raise FileNotFoundError(
-            "missing CDFShop-selected RMI artifacts:\n- " + "\n- ".join(missing)
-        )
-
-    stats_path = generated_dir / f"{namespace}.stats.json"
-    stats = load_rmi_stats(stats_path)
-    stats_layers = str(stats.get("layers", ""))
-    stats_branch = as_int(stats.get("branching factor"), -1)
-    stats_size = as_int(stats.get("size"), 0)
-    if stats_layers != layers or stats_branch != branch_factor:
-        raise RuntimeError(
-            f"generated RMI stats mismatch for {namespace}: "
-            f"layers={stats_layers!r}, BF={stats_branch}; "
-            f"expected layers={layers!r}, BF={branch_factor}"
-        )
-    if stats_size != optimizer_size_bytes:
-        raise RuntimeError(
-            f"generated RMI size mismatch for {namespace}: stats={stats_size}, "
-            f"CDFShop optimizer={optimizer_size_bytes}"
-        )
-    return stats
-
-
-def prepare_cdfshop_rmi_artifacts(
-    *,
-    choices: list[dict[str, Any]],
-    repo_root: Path,
-    generator: Path,
-    namespace_prefix: str,
-    optimizer_data: Path,
-    data_path: Path,
-    query_path: Path,
-    header_mode: str,
-    rmi_dir: Path,
-    generated_dir: Path,
-    results_dir: Path,
-    rmi_data_dir: Path,
-    python_bin: Path,
-    output_dir: Path,
-    skip_prepare: bool,
-) -> list[dict[str, Any]]:
-    configs: dict[tuple[str, int], dict[str, Any]] = {}
-    for choice in choices:
-        layers = str(choice.get("layers", "")).strip()
-        branch_factor = as_int(choice.get("branch_factor"), -1)
-        size = as_int(choice.get("optimizer_size_bytes"), 0)
-        if not layers or branch_factor <= 0 or size <= 0:
-            raise ValueError(f"invalid CDFShop optimizer config: {choice}")
-        namespace = rmi_namespace(namespace_prefix, layers, branch_factor)
-        choice["benchmark_namespace"] = namespace
-        configs[(layers, branch_factor)] = {
-            "namespace": namespace,
-            "layers": layers,
-            "branch_factor": branch_factor,
-            "optimizer_size_bytes": size,
-        }
-
-    missing_by_layers: dict[str, list[int]] = {}
-    for config in configs.values():
-        try:
-            validate_cdfshop_rmi_artifact(
-                generated_dir=generated_dir,
-                rmi_data_dir=rmi_data_dir,
-                namespace=str(config["namespace"]),
-                layers=str(config["layers"]),
-                branch_factor=int(config["branch_factor"]),
-                optimizer_size_bytes=int(config["optimizer_size_bytes"]),
-            )
-        except FileNotFoundError:
-            missing_by_layers.setdefault(str(config["layers"]), []).append(
-                int(config["branch_factor"])
-            )
-
-    if missing_by_layers and skip_prepare:
-        missing_text = ", ".join(
-            f"{layers}: {sorted(branches)}"
-            for layers, branches in sorted(missing_by_layers.items())
-        )
-        raise RuntimeError(
-            "CDFShop-selected RMI artifacts are missing and "
-            f"--skip-cdfshop-rmi-prepare was set: {missing_text}"
-        )
-
-    for layers, branches in sorted(missing_by_layers.items()):
-        env = {
-            **os.environ,
-            "RMI_REPO": str(rmi_dir),
-            "RMI_EVAL_DIR": str(generated_dir.parent),
-            "GENERATED_DIR": str(generated_dir),
-            "RESULTS_DIR": str(results_dir),
-            "RMI_DATA_DIR": str(rmi_data_dir),
-            "TRAIN_DATA_PATH": str(optimizer_data),
-            "TRAIN_DATA_SOURCE_PATH": str(optimizer_data),
-            "TRAIN_DATA_SOURCE_HEADER": "yes",
-            "AUTO_PREPARE_RMI_TRAIN_DATA": "0",
-            "COLLECT_DATA_PATH": str(data_path),
-            "COLLECT_DATA_HEADER": header_mode,
-            "QUERY_PATH": str(query_path),
-            "NAMESPACE_PREFIX": namespace_prefix,
-            "MODELS": layers,
-            "BF_LIST": " ".join(str(branch) for branch in sorted(set(branches))),
-            "COLLECT_RECORDS": "0",
-            "BUILD_RMI_BENCH": "0",
-            "PYTHON_BIN": str(python_bin),
-        }
-        log_path = output_dir / f"prepare_cdfshop_{rmi_model_tag(layers)}.log"
-        run_command(
-            ["bash", str(generator)],
-            cwd=repo_root,
-            env=env,
-            log_path=log_path,
-        )
-
-    for config in configs.values():
-        stats = validate_cdfshop_rmi_artifact(
-            generated_dir=generated_dir,
-            rmi_data_dir=rmi_data_dir,
-            namespace=str(config["namespace"]),
-            layers=str(config["layers"]),
-            branch_factor=int(config["branch_factor"]),
-            optimizer_size_bytes=int(config["optimizer_size_bytes"]),
-        )
-        config["stats_path"] = str(
-            generated_dir / f"{config['namespace']}.stats.json"
-        )
-        config["generated_size_bytes"] = as_int(stats.get("size"), 0)
-    return list(configs.values())
-
-
-def write_rmi_config_manifest(
-    path: Path,
-    configs: list[dict[str, Any]],
-) -> None:
-    unique: dict[tuple[str, str, int], None] = {}
-    for config in configs:
-        namespace = str(config["namespace"])
-        layers = str(config["layers"])
-        branch_factor = int(config["branch_factor"])
-        if any(char in namespace or char in layers for char in ("|", "\n", "\r")):
-            raise ValueError(f"invalid RMI manifest entry: {config}")
-        unique[(namespace, layers, branch_factor)] = None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "".join(
-            f"{namespace}|{layers}|{branch_factor}\n"
-            for namespace, layers, branch_factor in unique
-        )
-    )
-
-
-def build_rmi_bench_with_manifest(
-    *,
-    repo_root: Path,
-    build_dir: Path,
-    generated_dir: Path,
-    manifest_path: Path,
-    build_jobs: int,
-    output_dir: Path,
-) -> Path:
-    run_command(
-        [
-            "cmake",
-            "-S",
-            str(repo_root),
-            "-B",
-            str(build_dir),
-            "-DCMAKE_BUILD_TYPE=Release",
-            f"-DCAM_RMI_GENERATED_DIR={generated_dir}",
-            f"-DCAM_RMI_CONFIGS_FILE={manifest_path}",
-        ],
-        log_path=output_dir / "configure_rmi_bench.log",
-    )
-    run_command(
-        [
-            "cmake",
-            "--build",
-            str(build_dir),
-            "--target",
-            "rmi_bench",
-            "-j",
-            str(max(1, build_jobs)),
-        ],
-        log_path=output_dir / "build_rmi_bench.log",
-    )
-    binary = build_dir / "rmi_bench"
-    if not binary.exists():
-        raise FileNotFoundError(f"rmi_bench build did not produce {binary}")
-    return binary
 
 
 def prepare_headered_optimizer_data(
@@ -758,7 +502,6 @@ def load_optimizer_configs(path: Path) -> list[dict[str, Any]]:
                 "average_log2_error": as_float(cfg.get("average log2 error")),
                 "max_log2_error": as_float(cfg.get("max log2 error")),
                 "binary": cfg.get("binary", ""),
-                "config_source": "cdfshop_optimizer_json",
             }
         )
     if not rows:
@@ -766,10 +509,84 @@ def load_optimizer_configs(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def load_supported_rmi_configs(
+    generated_dir: Path,
+    results_dir: Path,
+    rmi_prefix: str,
+    supported_bfs: set[int],
+    supported_layers: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for idx, branch in enumerate(sorted(supported_bfs)):
+        stats_path = generated_dir / f"{rmi_prefix}_{branch}.stats.json"
+        records_path = results_dir / f"{rmi_prefix}_{branch}.csv"
+        if not stats_path.exists():
+            errors.append(f"BF={branch}: missing {stats_path}")
+            continue
+        if not records_path.exists():
+            errors.append(f"BF={branch}: missing {records_path}")
+            continue
+
+        with stats_path.open() as f:
+            stats = json.load(f)
+        meta = load_rmi_result_meta(records_path)
+        stats_layers = str(stats.get("layers", ""))
+        stats_branch = as_int(stats.get("branching factor"), -1)
+        stats_size = as_int(stats.get("size"), 0)
+        actual_size = as_int(meta.get("rmi_size"), 0)
+        if stats_layers != supported_layers:
+            errors.append(
+                f"BF={branch}: stats layers={stats_layers!r}, expected {supported_layers!r}"
+            )
+            continue
+        if stats_branch != branch:
+            errors.append(f"BF={branch}: stats branching factor is {stats_branch}")
+            continue
+        if stats_size <= 0 or actual_size <= 0 or stats_size != actual_size:
+            errors.append(
+                f"BF={branch}: invalid/mismatched size stats={stats_size}, collector={actual_size}"
+            )
+            continue
+
+        rows.append(
+            {
+                "optimizer_rank": idx,
+                "layers": stats_layers,
+                "branch_factor": branch,
+                "namespace": f"{rmi_prefix}_{branch}",
+                "optimizer_size_bytes": actual_size,
+                "average_log2_error": as_float(stats.get("average log2 error")),
+                "max_log2_error": as_float(stats.get("max log2 error")),
+                "binary": True,
+                "degenerate": as_int(meta.get("degenerate"), 0),
+                "config_source": "supported_rmi_stats",
+                "stats_path": str(stats_path),
+                "records_path": str(records_path),
+            }
+        )
+
+    if errors:
+        shown = "\n".join(f"- {item}" for item in errors[:16])
+        if len(errors) > 16:
+            shown += f"\n- ... {len(errors) - 16} more"
+        raise RuntimeError(
+            "supported RMI statistics validation failed:\n"
+            f"{shown}\n"
+            "Regenerate RMI artifacts so every compiled (layers, BF) has matching "
+            ".stats.json and collector CSV files."
+        )
+    if not rows:
+        raise RuntimeError("no supported RMI configurations are available for CDFShop selection")
+    return rows
+
+
 def choose_cdfshop_configs(
     configs: list[dict[str, Any]],
     memory_bytes: int,
     cache_ratios: list[float],
+    supported_bfs: set[int],
+    supported_layers: str,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     annotated: list[dict[str, Any]] = []
     choices: list[dict[str, Any]] = []
@@ -789,21 +606,20 @@ def choose_cdfshop_configs(
             row["cache_bytes"] = cache_bytes
             row["index_budget_bytes"] = index_budget_bytes
             row["fits_index_budget"] = int(size <= index_budget_bytes)
-            row["valid_optimizer_config"] = int(
-                bool(str(row.get("layers", "")).strip())
-                and branch > 0
-                and size > 0
-                and float(row["average_log2_error"]) < float("inf")
+            row["compiled_layers_match"] = int(str(row.get("layers", "")) == supported_layers)
+            row["non_degenerate"] = int(as_int(row.get("degenerate"), 0) == 0)
+            row["supported_by_rmi_bench"] = int(
+                branch in supported_bfs and row["compiled_layers_match"] and row["non_degenerate"]
             )
             row["selected"] = 0
             annotated.append(row)
-            if row["fits_index_budget"] and row["valid_optimizer_config"]:
+            if row["fits_index_budget"] and row["supported_by_rmi_bench"]:
                 feasible_rows.append(row)
 
         if not feasible_rows:
             raise RuntimeError(
-                "no valid CDFShop optimizer config fits the CDFShop index budget "
-                f"for cache_ratio={ratio:g} "
+                "no CDFShop optimizer config both fits the CDFShop index budget "
+                f"and matches compiled layers={supported_layers} for cache_ratio={ratio:g} "
                 f"(index_budget_bytes={index_budget_bytes})"
             )
 
@@ -1229,12 +1045,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rmi_dir = (repo_root / args.rmi_directory).resolve() if not Path(args.rmi_directory).is_absolute() else Path(args.rmi_directory)
-    rmi_bin = resolve_executable(args.rmi_bin, repo_root).resolve()
-    if rmi_bin.name != "rmi_bench":
-        raise ValueError(
-            "--rmi-bin must name the rmi_bench executable so the driver can rebuild it"
-        )
-    rmi_build_dir = rmi_bin.parent
+    rmi_bin = resolve_executable(args.rmi_bin, repo_root)
     python_bin = Path(args.python_bin).expanduser()
     rmi_data_dir = (repo_root / args.rmi_data_dir).resolve() if not Path(args.rmi_data_dir).is_absolute() else Path(args.rmi_data_dir)
     rmi_results_dir = (repo_root / args.rmi_results_dir).resolve() if not Path(args.rmi_results_dir).is_absolute() else Path(args.rmi_results_dir)
@@ -1242,14 +1053,6 @@ def main() -> None:
         (repo_root / args.rmi_generated_dir).resolve()
         if not Path(args.rmi_generated_dir).is_absolute()
         else Path(args.rmi_generated_dir)
-    )
-    rmi_generator = Path(args.rmi_generator).expanduser()
-    if not rmi_generator.is_absolute():
-        rmi_generator = (repo_root / rmi_generator).resolve()
-    rmi_namespace_prefix = (
-        str(args.rmi_namespace_prefix)
-        if args.rmi_namespace_prefix
-        else infer_rmi_namespace_prefix(args.rmi_name_prefix, args.rmi_layers)
     )
 
     supported_bfs = detect_available_rmi_bench_bfs(
@@ -1319,49 +1122,20 @@ def main() -> None:
 
     run_metadata: list[dict[str, Any]] = []
     if optimizer_output.exists() and not args.dry_run:
-        optimizer_configs = load_optimizer_configs(optimizer_output)
+        load_optimizer_configs(optimizer_output)
+        optimizer_configs = load_supported_rmi_configs(
+            generated_dir=rmi_generated_dir,
+            results_dir=rmi_results_dir,
+            rmi_prefix=args.rmi_name_prefix,
+            supported_bfs=supported_bfs,
+            supported_layers=args.rmi_layers,
+        )
         cdfshop_choices, cdfshop_rows = choose_cdfshop_configs(
             optimizer_configs,
             memory_bytes=memory_bytes,
             cache_ratios=cache_ratios,
-        )
-        cdfshop_benchmark_configs = prepare_cdfshop_rmi_artifacts(
-            choices=cdfshop_choices,
-            repo_root=repo_root,
-            generator=rmi_generator,
-            namespace_prefix=rmi_namespace_prefix,
-            optimizer_data=optimizer_data,
-            data_path=data_path,
-            query_path=query_path,
-            header_mode=args.header,
-            rmi_dir=rmi_dir,
-            generated_dir=rmi_generated_dir,
-            results_dir=rmi_results_dir,
-            rmi_data_dir=rmi_data_dir,
-            python_bin=python_bin,
-            output_dir=output_dir,
-            skip_prepare=args.skip_cdfshop_rmi_prepare,
-        )
-        fixed_family_configs = [
-            {
-                "namespace": f"{args.rmi_name_prefix}_{branch_factor}",
-                "layers": args.rmi_layers,
-                "branch_factor": branch_factor,
-            }
-            for branch_factor in candidate_bfs
-        ]
-        rmi_manifest_path = output_dir / "rmi_bench_configs.txt"
-        write_rmi_config_manifest(
-            rmi_manifest_path,
-            fixed_family_configs + cdfshop_benchmark_configs,
-        )
-        rmi_bin = build_rmi_bench_with_manifest(
-            repo_root=repo_root,
-            build_dir=rmi_build_dir,
-            generated_dir=rmi_generated_dir,
-            manifest_path=rmi_manifest_path,
-            build_jobs=args.build_jobs,
-            output_dir=output_dir,
+            supported_bfs=supported_bfs,
+            supported_layers=args.rmi_layers,
         )
         cdfshop_csv = output_dir / "cdfshop_candidate_configs.csv"
         write_csv(cdfshop_csv, cdfshop_rows)
@@ -1372,8 +1146,6 @@ def main() -> None:
                 f"{cdfshop_bf} cache_ratio={float(cdfshop_choice['cache_ratio']):g} "
                 f"index_budget={cdfshop_choice['index_budget_bytes']} "
                 f"size={cdfshop_choice['optimizer_size_bytes']} "
-                f"avg_log2_error={float(cdfshop_choice['average_log2_error']):.6f} "
-                f"source={cdfshop_choice.get('config_source', '')} "
                 f"layers={cdfshop_choice.get('layers', '')}"
             )
             run_metadata.append(
@@ -1385,10 +1157,6 @@ def main() -> None:
                     "cdfshop_index_budget_bytes": cdfshop_choice["index_budget_bytes"],
                     "optimizer_size_bytes": cdfshop_choice["optimizer_size_bytes"],
                     "optimizer_layers": cdfshop_choice.get("layers", ""),
-                    "rmi_layers": cdfshop_choice.get("layers", ""),
-                    "benchmark_namespace": cdfshop_choice.get("benchmark_namespace", ""),
-                    "average_log2_error": cdfshop_choice.get("average_log2_error", ""),
-                    "config_source": "cdfshop_optimizer_json",
                     "optimizer_json": str(optimizer_output),
                     "tuning_time_s": cdfshop_timing.get("tuning_time_s", ""),
                     "tuning_time_source": cdfshop_timing.get("tuning_time_source", ""),
@@ -1455,7 +1223,6 @@ def main() -> None:
             {
                 "selector": "optimalBF",
                 "branch_factor": optimalbf_bf,
-                "rmi_layers": args.rmi_layers,
                 "tuning_policy": args.tuning_policy.upper(),
                 "estimated_cost": optimalbf_choice.get("cost", ""),
                 "estimated_total_ios": optimalbf_choice.get("estimated_total_ios", ""),
@@ -1473,7 +1240,6 @@ def main() -> None:
             {
                 "selector": "optimalBF",
                 "branch_factor": "<from_optimalBF>",
-                "rmi_layers": args.rmi_layers,
                 "tuning_policy": args.tuning_policy.upper(),
                 "estimate_log": str(estimate_log),
                 "tuning_time_s": optimalbf_timing.get("tuning_time_s", ""),
@@ -1532,7 +1298,7 @@ def main() -> None:
                 keys=keys,
                 memory_mib=args.M,
                 branch_factors=[int(meta["branch_factor"])],
-                rmi_layers=str(meta.get("rmi_layers", args.rmi_layers)),
+                rmi_layers=args.rmi_layers,
                 policies_csv=policies_csv,
                 strategies_csv=strategies_csv,
                 header_mode=args.header,

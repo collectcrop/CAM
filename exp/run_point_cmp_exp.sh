@@ -19,6 +19,8 @@ ACTUAL_DIR="${ACTUAL_DIR:-$ROOT_DIR/actual}"
 REPLAY_DIR="${REPLAY_DIR:-$ROOT_DIR/replay}"
 CAM_DIR="${CAM_DIR:-$ROOT_DIR/cam}"
 SUMMARY_DIR="${SUMMARY_DIR:-$ROOT_DIR/summary}"
+WOCACHE_DIR="${WOCACHE_DIR:-$ROOT_DIR/wocache}"
+WOCACHE_ACTUAL_DIR="${WOCACHE_ACTUAL_DIR:-$WOCACHE_DIR/actual}"
 
 DATASETS="${DATASETS:-books_200M_uint64_unique fb_200M_uint64_unique wiki_ts_200M_uint64 osm_cellids_200M_uint64_unique}"
 MEMORY_LIST="${MEMORY_LIST:-64 96 128 160}"
@@ -39,12 +41,14 @@ FORCE_PREFIXES="${FORCE_PREFIXES:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_GENERATE="${SKIP_GENERATE:-0}"
 SKIP_ACTUAL="${SKIP_ACTUAL:-0}"
+SKIP_LPM="${SKIP_LPM:-0}"
 SKIP_PREFIX="${SKIP_PREFIX:-0}"
 SKIP_REPLAY="${SKIP_REPLAY:-0}"
 SKIP_CAM="${SKIP_CAM:-0}"
 SKIP_SUMMARIZE="${SKIP_SUMMARIZE:-0}"
+SIMPLE_LPM_ITEMS_PER_PAGE="${SIMPLE_LPM_ITEMS_PER_PAGE:-512}"
 
-mkdir -p "$ROOT_DIR" "$WORKLOAD_DIR" "$PREFIX_DIR" "$ACTUAL_DIR" "$REPLAY_DIR" "$CAM_DIR" "$SUMMARY_DIR"
+mkdir -p "$ROOT_DIR" "$WORKLOAD_DIR" "$PREFIX_DIR" "$ACTUAL_DIR" "$REPLAY_DIR" "$CAM_DIR" "$SUMMARY_DIR" "$WOCACHE_ACTUAL_DIR"
 
 dataset_args=($DATASETS)
 memory_args=($MEMORY_LIST)
@@ -57,6 +61,7 @@ echo "[config] MEMORY_LIST=${memory_args[*]}"
 echo "[config] EPS_LIST=$EPS_LIST"
 echo "[config] SAMPLE_RATES=${sample_rate_args[*]}"
 echo "[config] POLICY=$POLICY STRATEGY=$STRATEGY"
+echo "[config] WOCACHE_ACTUAL_DIR=$WOCACHE_ACTUAL_DIR SIMPLE_LPM_ITEMS_PER_PAGE=$SIMPLE_LPM_ITEMS_PER_PAGE"
 echo "[config] NUM_QUERIES=$NUM_QUERIES QUERY_LIMIT=$QUERY_LIMIT"
 echo "[config] COLD_START_CORRECTION=$COLD_START_CORRECTION CAM_WARMUP_POSITION_CACHE=$CAM_WARMUP_POSITION_CACHE"
 echo "[config] ORDER_MODE=$ORDER_MODE WINDOW_SIZE=$WINDOW_SIZE WINDOW_RATIO_JITTER=$WINDOW_RATIO_JITTER"
@@ -112,6 +117,36 @@ if [ "$SKIP_ACTUAL" != "1" ]; then
         --M "$M" \
         --epsilons "$EPS_LIST" \
         --policies "$POLICY" \
+        --strategies "$STRATEGY" \
+        --budget-mode estimated \
+        --query-limit "$QUERY_LIMIT" \
+        --summary-out "$out_csv"
+    done
+  done
+fi
+
+if [ "$SKIP_LPM" != "1" ]; then
+  for dataset in "${dataset_args[@]}"; do
+    data_path="$DATASETS_DIRECTORY/$dataset"
+    query_path="$WORKLOAD_DIR/$dataset/$dataset.$WORKLOAD.bin"
+    if [ ! -f "$data_path" ]; then
+      echo "[error] missing dataset for LPM: $data_path" >&2
+      exit 1
+    fi
+    if [ ! -f "$query_path" ]; then
+      echo "[error] missing workload file for LPM: $query_path" >&2
+      exit 1
+    fi
+    for M in "${memory_args[@]}"; do
+      out_csv="$WOCACHE_ACTUAL_DIR/$dataset/${dataset}_${WORKLOAD}_M${M}_NONE_actual.csv"
+      mkdir -p "$(dirname "$out_csv")"
+      echo "[lpm][wocache] dataset=$dataset workload=$WORKLOAD M=${M}MiB -> $out_csv"
+      "$SIM_BIN" \
+        --data "$data_path" \
+        --queries "$query_path" \
+        --M "$M" \
+        --epsilons "$EPS_LIST" \
+        --policies NONE \
         --strategies "$STRATEGY" \
         --budget-mode estimated \
         --query-limit "$QUERY_LIMIT" \
@@ -199,6 +234,7 @@ if [ "$SKIP_SUMMARIZE" != "1" ]; then
     --datasets "${dataset_args[@]}" \
     --workload "$WORKLOAD" \
     --actual-dir "$ACTUAL_DIR" \
+    --lpm-dir "$WOCACHE_ACTUAL_DIR" \
     --replay-dir "$REPLAY_DIR" \
     --cam-csv "$CAM_DIR/cam_estimates.csv" \
     --output-dir "$SUMMARY_DIR" \
@@ -206,10 +242,12 @@ if [ "$SKIP_SUMMARIZE" != "1" ]; then
     --epsilons "$EPS_LIST" \
     --sample-rates "${sample_rate_args[@]}" \
     --policy "$POLICY" \
-    --strategy "$STRATEGY"
+    --strategy "$STRATEGY" \
+    --simple-lpm-items-per-page "$SIMPLE_LPM_ITEMS_PER_PAGE"
 fi
 
 echo "[done] prefix manifest: $PREFIX_DIR/prefix_manifest.csv"
 echo "[done] CAM estimates:   $CAM_DIR/cam_estimates.csv"
+echo "[done] LPM wocache:     $WOCACHE_ACTUAL_DIR"
 echo "[done] detail:          $SUMMARY_DIR/point_cmp_detail.csv"
 echo "[done] summary:         $SUMMARY_DIR/point_cmp_summary.csv"

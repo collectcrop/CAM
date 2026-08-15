@@ -117,6 +117,19 @@ bool binary_search_record(Record* records, size_t lo, size_t hi, KeyType target_
 }
 
 template<typename T>
+size_t sanitize_data_pgm_safe(std::vector<T> &data) {
+    constexpr T SENTINEL = std::numeric_limits<T>::max();
+    size_t fixed = 0;
+    for (T &x : data) {
+        if (x == SENTINEL) {
+            ++fixed;
+            x = SENTINEL - 1;
+        }
+    }
+    return fixed;
+}
+
+template<typename T>
 std::vector<T> load_data_pgm_safe(const std::string &filename, size_t n) {
     std::ifstream in(filename, std::ios::binary);
     if (!in) {
@@ -126,19 +139,15 @@ std::vector<T> load_data_pgm_safe(const std::string &filename, size_t n) {
     std::vector<T> data;
     data.reserve(n);
 
-    constexpr T SENTINEL = std::numeric_limits<T>::max();
     T x;
-    size_t cnt = 0, fixed = 0;
+    size_t cnt = 0;
 
     while (cnt < n && in.read(reinterpret_cast<char*>(&x), sizeof(T))) {
-        if (x == SENTINEL) {
-            ++fixed;
-            x = SENTINEL - 1;      
-        }
         data.push_back(x);
         ++cnt;
     }
 
+    const size_t fixed = sanitize_data_pgm_safe(data);
     std::cerr << "[load_data_pgm_safe] loaded=" << data.size()
               << ", sentinel_fixed=" << fixed << std::endl;
 

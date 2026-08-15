@@ -14,70 +14,7 @@
 #include "../src/storage/DiskManager.hpp"
 #include "../src/storage/KeyFile.hpp"
 
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1024.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1024.h"
-#define CAM_HAS_RMI_BOOKS_1024 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_128.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_128.h"
-#define CAM_HAS_RMI_BOOKS_128 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_131072.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_131072.h"
-#define CAM_HAS_RMI_BOOKS_131072 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_16384.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_16384.h"
-#define CAM_HAS_RMI_BOOKS_16384 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2048.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2048.h"
-#define CAM_HAS_RMI_BOOKS_2048 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_256.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_256.h"
-#define CAM_HAS_RMI_BOOKS_256 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_262144.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_262144.h"
-#define CAM_HAS_RMI_BOOKS_262144 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_32768.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_32768.h"
-#define CAM_HAS_RMI_BOOKS_32768 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_4096.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_4096.h"
-#define CAM_HAS_RMI_BOOKS_4096 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_512.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_512.h"
-#define CAM_HAS_RMI_BOOKS_512 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_64.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_64.h"
-#define CAM_HAS_RMI_BOOKS_64 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_65536.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_65536.h"
-#define CAM_HAS_RMI_BOOKS_65536 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_8192.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_8192.h"
-#define CAM_HAS_RMI_BOOKS_8192 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_524288.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_524288.h"
-#define CAM_HAS_RMI_BOOKS_524288 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1048576.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_1048576.h"
-#define CAM_HAS_RMI_BOOKS_1048576 1
-#endif
-#if __has_include("../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2097152.h")
-#include "../src/rmi/rmi_eval/generated/books_rmi_linear_spline_linear_2097152.h"
-#define CAM_HAS_RMI_BOOKS_2097152 1
-#endif
+#include "rmi_bench_registry.h"
 
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
@@ -86,6 +23,7 @@ namespace {
 
 struct RMIModelSpec {
     const char* name = "";
+    const char* layers = "";
     size_t branch_factor = 0;
     size_t index_bytes = 0;
     uint64_t build_time_ns = 0;
@@ -94,110 +32,11 @@ struct RMIModelSpec {
     uint64_t (*lookup)(uint64_t, size_t*) = nullptr;
 };
 
-#ifdef CAM_HAS_RMI_BOOKS_64
-#define CAM_RMI_MODEL_64(X) X(books_rmi_linear_spline_linear_64, 64)
-#else
-#define CAM_RMI_MODEL_64(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_128
-#define CAM_RMI_MODEL_128(X) X(books_rmi_linear_spline_linear_128, 128)
-#else
-#define CAM_RMI_MODEL_128(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_256
-#define CAM_RMI_MODEL_256(X) X(books_rmi_linear_spline_linear_256, 256)
-#else
-#define CAM_RMI_MODEL_256(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_512
-#define CAM_RMI_MODEL_512(X) X(books_rmi_linear_spline_linear_512, 512)
-#else
-#define CAM_RMI_MODEL_512(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_1024
-#define CAM_RMI_MODEL_1024(X) X(books_rmi_linear_spline_linear_1024, 1024)
-#else
-#define CAM_RMI_MODEL_1024(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_2048
-#define CAM_RMI_MODEL_2048(X) X(books_rmi_linear_spline_linear_2048, 2048)
-#else
-#define CAM_RMI_MODEL_2048(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_4096
-#define CAM_RMI_MODEL_4096(X) X(books_rmi_linear_spline_linear_4096, 4096)
-#else
-#define CAM_RMI_MODEL_4096(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_8192
-#define CAM_RMI_MODEL_8192(X) X(books_rmi_linear_spline_linear_8192, 8192)
-#else
-#define CAM_RMI_MODEL_8192(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_16384
-#define CAM_RMI_MODEL_16384(X) X(books_rmi_linear_spline_linear_16384, 16384)
-#else
-#define CAM_RMI_MODEL_16384(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_32768
-#define CAM_RMI_MODEL_32768(X) X(books_rmi_linear_spline_linear_32768, 32768)
-#else
-#define CAM_RMI_MODEL_32768(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_65536
-#define CAM_RMI_MODEL_65536(X) X(books_rmi_linear_spline_linear_65536, 65536)
-#else
-#define CAM_RMI_MODEL_65536(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_131072
-#define CAM_RMI_MODEL_131072(X) X(books_rmi_linear_spline_linear_131072, 131072)
-#else
-#define CAM_RMI_MODEL_131072(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_262144
-#define CAM_RMI_MODEL_262144(X) X(books_rmi_linear_spline_linear_262144, 262144)
-#else
-#define CAM_RMI_MODEL_262144(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_524288
-#define CAM_RMI_MODEL_524288(X) X(books_rmi_linear_spline_linear_524288, 524288)
-#else
-#define CAM_RMI_MODEL_524288(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_1048576
-#define CAM_RMI_MODEL_1048576(X) X(books_rmi_linear_spline_linear_1048576, 1048576)
-#else
-#define CAM_RMI_MODEL_1048576(X)
-#endif
-#ifdef CAM_HAS_RMI_BOOKS_2097152
-#define CAM_RMI_MODEL_2097152(X) X(books_rmi_linear_spline_linear_2097152, 2097152)
-#else
-#define CAM_RMI_MODEL_2097152(X)
-#endif
-
-#define CAM_RMI_MODEL_LIST(X) \
-    CAM_RMI_MODEL_64(X) \
-    CAM_RMI_MODEL_128(X) \
-    CAM_RMI_MODEL_256(X) \
-    CAM_RMI_MODEL_512(X) \
-    CAM_RMI_MODEL_1024(X) \
-    CAM_RMI_MODEL_2048(X) \
-    CAM_RMI_MODEL_4096(X) \
-    CAM_RMI_MODEL_8192(X) \
-    CAM_RMI_MODEL_16384(X) \
-    CAM_RMI_MODEL_32768(X) \
-    CAM_RMI_MODEL_65536(X) \
-    CAM_RMI_MODEL_131072(X) \
-    CAM_RMI_MODEL_262144(X) \
-    CAM_RMI_MODEL_524288(X) \
-    CAM_RMI_MODEL_1048576(X) \
-    CAM_RMI_MODEL_2097152(X)
-
 static const std::vector<RMIModelSpec> kRmiModels = [] {
     std::vector<RMIModelSpec> models;
     models.reserve(16);
-#define CAM_REGISTER_RMI(ns, branch) \
-    models.push_back({ns::NAME, branch, ns::RMI_SIZE, ns::BUILD_TIME_NS, ns::load, ns::cleanup, ns::lookup});
+#define CAM_REGISTER_RMI(ns, model_layers, branch) \
+    models.push_back({ns::NAME, model_layers, branch, ns::RMI_SIZE, ns::BUILD_TIME_NS, ns::load, ns::cleanup, ns::lookup});
     CAM_RMI_MODEL_LIST(CAM_REGISTER_RMI)
 #undef CAM_REGISTER_RMI
     return models;
@@ -207,6 +46,7 @@ struct Config {
     std::string data_path;
     std::string query_path;
     std::string rmi_data_dir = "src/rmi/rmi_data";
+    std::string rmi_layers;
     size_t total_keys = 0;
     size_t total_budget_bytes = 64ULL << 20;
     bool has_fixed_cache_bytes = false;
@@ -215,6 +55,7 @@ struct Config {
     std::vector<SearchStrategy> strategies = {ALL_IN_ONCE};
     std::vector<CachePolicy> policies = {CachePolicy::FIFO, CachePolicy::LRU, CachePolicy::LFU};
     std::vector<const RMIModelSpec*> models;
+    std::string rmi_selectors = "all";
     size_t query_limit = 0;
 };
 
@@ -262,7 +103,7 @@ std::string supported_rmi_list() {
         if (i != 0) {
             oss << ',';
         }
-        oss << kRmiModels[i].branch_factor;
+        oss << kRmiModels[i].layers << ':' << kRmiModels[i].branch_factor;
     }
     return oss.str();
 }
@@ -274,38 +115,53 @@ std::string supported_rmi_list() {
         " [--keys <n>] [--M <MiB>] [--cache-bytes <bytes>]"
         " [--header <auto|yes|no>] [--strategies <all_in_once,one_by_one|all>]"
         " [--policies <fifo,lru,lfu,none|all>]"
-        " [--branch-factors <all|" + supported_rmi_list() + ">]"
+        " [--rmi-layers <top,leaf>] [--branch-factors <all|" + supported_rmi_list() + ">]"
         " [--query-limit <n>]");
 }
 
-const RMIModelSpec* find_rmi_model(const std::string& raw_token) {
+const RMIModelSpec* find_rmi_model(
+    const std::string& raw_token,
+    const std::string& required_layers)
+{
     const std::string token = cam::storage::trim(raw_token);
     if (token.empty()) {
         return nullptr;
     }
 
+    std::vector<const RMIModelSpec*> matches;
     const bool all_digits = std::all_of(token.begin(), token.end(), [](unsigned char ch) {
         return std::isdigit(ch) != 0;
     });
     if (all_digits) {
         const size_t branch_factor = std::stoull(token);
         for (const auto& model : kRmiModels) {
-            if (model.branch_factor == branch_factor) {
-                return &model;
+            if (model.branch_factor == branch_factor &&
+                (required_layers.empty() || required_layers == model.layers)) {
+                matches.push_back(&model);
+            }
+        }
+    } else {
+        const std::string upper = cam::storage::to_upper(token);
+        for (const auto& model : kRmiModels) {
+            if (cam::storage::to_upper(model.name) == upper &&
+                (required_layers.empty() || required_layers == model.layers)) {
+                matches.push_back(&model);
             }
         }
     }
 
-    const std::string upper = cam::storage::to_upper(token);
-    for (const auto& model : kRmiModels) {
-        if (cam::storage::to_upper(model.name) == upper) {
-            return &model;
-        }
+    if (matches.size() > 1) {
+        throw std::invalid_argument(
+            "ambiguous RMI selector " + token +
+            "; pass --rmi-layers to choose a model family");
     }
-    return nullptr;
+    return matches.empty() ? nullptr : matches.front();
 }
 
-std::vector<const RMIModelSpec*> parse_rmi_list(const std::string& value) {
+std::vector<const RMIModelSpec*> parse_rmi_list(
+    const std::string& value,
+    const std::string& required_layers)
+{
     if (kRmiModels.empty()) {
         throw std::invalid_argument(
             "no RMI models were compiled into rmi_bench; run exp/generate_rmi_headers.sh "
@@ -317,7 +173,13 @@ std::vector<const RMIModelSpec*> parse_rmi_list(const std::string& value) {
         std::vector<const RMIModelSpec*> all;
         all.reserve(kRmiModels.size());
         for (const auto& model : kRmiModels) {
-            all.push_back(&model);
+            if (required_layers.empty() || required_layers == model.layers) {
+                all.push_back(&model);
+            }
+        }
+        if (all.empty()) {
+            throw std::invalid_argument(
+                "no compiled RMI models use requested layers " + required_layers);
         }
         return all;
     }
@@ -331,7 +193,7 @@ std::vector<const RMIModelSpec*> parse_rmi_list(const std::string& value) {
             continue;
         }
 
-        const RMIModelSpec* model = find_rmi_model(token);
+        const RMIModelSpec* model = find_rmi_model(token, required_layers);
         if (!model) {
             throw std::invalid_argument(
                 "unknown RMI selector: " + token +
@@ -379,8 +241,10 @@ Config parse_args(int argc, char** argv) {
                 cam::point_query::parse_search_strategy_list(require_value("--strategies"));
         } else if (arg == "--policies") {
             cfg.policies = cam::cache::parse_policy_list(require_value("--policies"));
+        } else if (arg == "--rmi-layers") {
+            cfg.rmi_layers = require_value("--rmi-layers");
         } else if (arg == "--branch-factors" || arg == "--rmis") {
-            cfg.models = parse_rmi_list(require_value(arg.c_str()));
+            cfg.rmi_selectors = require_value(arg.c_str());
         } else if (arg == "--query-limit") {
             cfg.query_limit = std::stoull(require_value("--query-limit"));
         } else if (arg == "-h" || arg == "--help") {
@@ -393,9 +257,7 @@ Config parse_args(int argc, char** argv) {
     if (cfg.data_path.empty() || cfg.query_path.empty()) {
         usage_error("both --data and --queries are required");
     }
-    if (cfg.models.empty()) {
-        cfg.models = parse_rmi_list("all");
-    }
+    cfg.models = parse_rmi_list(cfg.rmi_selectors, cfg.rmi_layers);
     cfg.rmi_data_dir = resolve_local_path(cfg.rmi_data_dir);
     return cfg;
 }
@@ -513,7 +375,7 @@ RunResult run_one_policy(
 
 void print_header() {
     std::cout
-        << "model,branch_factor,total_budget_bytes,index_bytes,cache_bytes,build_time_ns,"
+        << "model,layers,branch_factor,total_budget_bytes,index_bytes,cache_bytes,build_time_ns,"
         << "policy,strategy,queries,found,page_requests,cache_hits,cache_misses,hit_ratio,"
         << "logical_ios,physical_ios,avg_logical_ios,avg_physical_ios,"
         << "bytes_read,io_ns,wall_ns,throughput_qps,checksum\n";
@@ -531,6 +393,7 @@ void print_row(const RunResult& st) {
 
     std::cout
         << st.model->name << ','
+        << "\"" << st.model->layers << "\","
         << st.model->branch_factor << ','
         << st.total_budget_bytes << ','
         << st.index_bytes << ','

@@ -158,6 +158,7 @@ python3 exp/run_pgm_tuner_cache_compare.py \
   --candidate-eps 4-128 \
   --cache-ratios 0.25,0.50,0.75 \
   --cold-start-correction
+  --cam-size-mode powerlaw
 ```
 
 ---
@@ -216,21 +217,45 @@ DATASET=books_200M_uint64_unique bash exp/run_join_workloads.sh
 
 ### 9. Hybrid Join Evaluation
 
-Compares four join strategies (hybrid, point-only, range-only, INLJ) on the books and fb datasets.
+Compares six join strategies: hybrid, point-only, range-only, INLJ, Hash Join, and Sort-Merge Join. The default outer-relation sweep is `10K`, `100K`, `1M`, `10M`, `50M`, and `100M` tuples.
 
 **Step 1: Generate join workloads and partition metadata**
 ```bash
-# Books dataset — generates .bin (queries), .par (partition lengths), .bitmap (point/range markers)
-source build/log/join_fit/books_10M_uint64_unique_join_cost_params.env 
+# Generates .bin queries plus the .par/.bitmap metadata required by Hybrid.
+source build/log/join_fit/books_10M_uint64_unique_join_cost_params.env
 DATASET=books_200M_uint64_unique bash exp/run_join_workloads.sh
 ```
 
-**Step 2: Run hybrid join comparison**
+**Step 2: Run and plot the comparison**
 ```bash
 cmake --build build --target pgm_hybrid_join
-
-# Books dataset, all 6 workload tables
-# Output: build/log/hybrid_join/${DATASET}_join_compare.csv
 DATASET=books_200M_uint64_unique TABLE_LIST="1 2 3 4 5 6" \
-bash exp/run_hybrid_join.sh
+  bash exp/run_hybrid_join.sh
+python3 visualize/plot_hybrid_join_time.py \
+  --input-dir build/log/hybrid_join \
+  --dataset-filter books_200M_uint64_unique \
+  --formats pdf
 ```
+
+The runner writes one CSV per outer size, for example `build/log/hybrid_join/books_200M_uint64_unique_10K_join_compare.csv`. Unless `NUM_KEYS` is supplied explicitly, the inner cardinality is detected from the dataset file.
+
+**10 MiB inner-relation experiment**
+
+The dedicated pipeline takes the first `10 * 1024 * 1024` bytes of the source dataset (1,310,720 `uint64_t` keys), creates `books_10MB_uint64_unique`, generates all six outer sizes and their Hybrid metadata, runs the benchmark, and writes one aggregated PDF:
+
+```bash
+# Source a cost-parameter file fitted for this inner relation when available.
+# source build/log/join_fit/books_10MB_uint64_unique_join_cost_params.env
+DATASETS_DIRECTORY=/path/to/SOSD \
+SOURCE_DATASET=books_200M_uint64_unique \
+  bash exp/run_hybrid_join_10mb.sh
+```
+
+The workload generator otherwise uses its current/default cost parameters. For a strict Hybrid comparison, first run only the prefix stage, fit parameters on `books_10MB_uint64_unique`, then source that `.env` before resuming the pipeline.
+
+Outputs default to:
+
+- Logs: `build/log/hybrid_join_10mb/`
+- PDF: `data/outputs/figures/hybrid_join_10mb/books_10MB_uint64_unique_end_to_end_time.pdf`
+
+Long phases can be reused independently with `SKIP_PREPARE=1`, `SKIP_GENERATE=1`, `SKIP_BUILD=1`, `SKIP_RUN=1`, or `SKIP_PLOT=1`. Set `ALLOW_INCOMPLETE_PLOT=1` to visualize a partially completed sweep.

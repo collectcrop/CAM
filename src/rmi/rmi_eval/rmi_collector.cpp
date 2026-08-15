@@ -1,8 +1,13 @@
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
+#include <filesystem>
+#include <iomanip>
+#include <limits>
+#include <unordered_map>
 #include <iostream>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -21,13 +26,16 @@ struct Args {
     bool has_header = true;   // SOSD-style: first uint64_t is count
     bool use_successor = false; // if true, use lower_bound; else predecessor position
     size_t query_limit = 0;
+    size_t branch_factor = 0;
+    double max_error_fraction = 0.25;
+    double max_dominant_leaf_ratio = 0.99;
 };
 
 static Args parse_args(int argc, char** argv) {
     if (argc < 5) {
         throw std::runtime_error(
             "usage: <binary_file> <data_file> <rmi_data_dir> <query_file> <out_csv>"
-            " [--no-header] [--successor] [--query-limit <n>]");
+            " [--no-header] [--successor] [--query-limit <n>] [--branch-factor <n>] [--max-error-fraction <f>] [--max-dominant-leaf-ratio <f>]");
     }
     Args args;
     args.data_file = argv[1];
@@ -46,9 +54,24 @@ static Args parse_args(int argc, char** argv) {
                 throw std::runtime_error("missing value for --query-limit");
             }
             args.query_limit = std::stoull(argv[++i]);
+        } else if (flag == "--branch-factor") {
+            if (i + 1 >= argc) throw std::runtime_error("missing value for --branch-factor");
+            args.branch_factor = std::stoull(argv[++i]);
+        } else if (flag == "--max-error-fraction") {
+            if (i + 1 >= argc) throw std::runtime_error("missing value for --max-error-fraction");
+            args.max_error_fraction = std::stod(argv[++i]);
+        } else if (flag == "--max-dominant-leaf-ratio") {
+            if (i + 1 >= argc) throw std::runtime_error("missing value for --max-dominant-leaf-ratio");
+            args.max_dominant_leaf_ratio = std::stod(argv[++i]);
         } else {
             throw std::runtime_error("unknown flag: " + flag);
         }
+    }
+    if (!(args.max_error_fraction > 0.0 && args.max_error_fraction <= 1.0)) {
+        throw std::runtime_error("--max-error-fraction must be in (0, 1]");
+    }
+    if (!(args.max_dominant_leaf_ratio > 0.0 && args.max_dominant_leaf_ratio <= 1.0)) {
+        throw std::runtime_error("--max-dominant-leaf-ratio must be in (0, 1]");
     }
     return args;
 }
@@ -130,34 +153,96 @@ int main(int argc, char** argv) {
             throw std::runtime_error("rmi_ns::load failed for dir: " + args.rmi_data_dir);
         }
 
-        std::ofstream out(args.out_csv);
-        if (!out) throw std::runtime_error("failed to open output csv: " + args.out_csv);
+        const std::filesystem::path output_path(args.out_csv);
+        const std::filesystem::path body_path(args.out_csv + ".tmp");
+        std::error_code remove_error;
+        std::filesystem::remove(output_path, remove_error);
+        std::filesystem::remove(body_path, remove_error);
 
-        // Metadata block as commented CSV lines.
-        out << "#name," << rmi_ns::NAME << "\n";
-        out << "#rmi_size," << rmi_ns::RMI_SIZE << "\n";
-        out << "#build_time_ns," << rmi_ns::BUILD_TIME_NS << "\n";
-        out << "#num_data," << data.size() << "\n";
-        out << "#num_queries," << queries.size() << "\n";
-        out << "true_pos,leaf_id,err,pred_pos,key\n";
+        std::ofstream body(body_path);
+        if (!body) throw std::runtime_error("failed to open temporary collector output: " + body_path.string());
+
+        const size_t max_allowed_error = static_cast<size_t>(
+            args.max_error_fraction * static_cast<double>(data.size()));
+        size_t max_error = 0;
+        size_t large_error_queries = 0;
+        std::unordered_map<size_t, size_t> leaf_counts;
 
         for (KeyType key : queries) {
             size_t err = 0;
             size_t leaf_id = 0;
             uint64_t pred = rmi_ns::lookup_with_leaf(static_cast<uint64_t>(key), &err, &leaf_id);
+            if (args.branch_factor > 0 && leaf_id >= args.branch_factor) {
+                throw std::runtime_error("generated RMI returned an out-of-range leaf id");
+            }
 
             size_t pos = args.use_successor
                 ? true_position_successor(data, key)
                 : true_position_predecessor(data, key);
 
-            out << pos << ','
-                << leaf_id << ','
-                << err << ','
-                << pred << ','
-                << key << '\n';
+            max_error = std::max(max_error, err);
+            if (err > max_allowed_error) ++large_error_queries;
+            ++leaf_counts[leaf_id];
+            body << pos << ","
+                 << leaf_id << ","
+                 << err << ","
+                 << pred << ","
+                 << key << "\n";
+        }
+        body.close();
+        if (!body) throw std::runtime_error("failed while writing temporary collector output");
+        rmi_ns::cleanup();
+
+        size_t dominant_leaf_queries = 0;
+        for (const auto& item : leaf_counts) {
+            dominant_leaf_queries = std::max(dominant_leaf_queries, item.second);
+        }
+        const double dominant_leaf_ratio = queries.empty()
+            ? 0.0
+            : static_cast<double>(dominant_leaf_queries) / static_cast<double>(queries.size());
+        const bool excessive_error = max_error > max_allowed_error;
+        const bool collapsed_routing =
+            args.branch_factor > 1 && dominant_leaf_ratio > args.max_dominant_leaf_ratio;
+
+        if (excessive_error || collapsed_routing) {
+            std::filesystem::remove(body_path, remove_error);
+            std::ostringstream reason;
+            reason << "degenerate RMI records rejected: max_error=" << max_error
+                   << " allowed_error=" << max_allowed_error
+                   << " large_error_queries=" << large_error_queries
+                   << " used_leaves=" << leaf_counts.size()
+                   << " dominant_leaf_ratio=" << std::fixed << std::setprecision(6)
+                   << dominant_leaf_ratio;
+            throw std::runtime_error(reason.str());
         }
 
-        rmi_ns::cleanup();
+        std::ofstream out(output_path);
+        if (!out) throw std::runtime_error("failed to open output csv: " + args.out_csv);
+        out << "#name," << rmi_ns::NAME << "\n";
+        out << "#rmi_size," << rmi_ns::RMI_SIZE << "\n";
+        out << "#build_time_ns," << rmi_ns::BUILD_TIME_NS << "\n";
+        out << "#num_data," << data.size() << "\n";
+        out << "#num_queries," << queries.size() << "\n";
+        out << "#branch_factor," << args.branch_factor << "\n";
+        out << "#used_leaves," << leaf_counts.size() << "\n";
+        out << "#max_error," << max_error << "\n";
+        out << "#max_allowed_error," << max_allowed_error << "\n";
+        out << "#large_error_queries," << large_error_queries << "\n";
+        out << "#dominant_leaf_ratio," << std::setprecision(17) << dominant_leaf_ratio << "\n";
+        out << "#degenerate,0\n";
+        out << "true_pos,leaf_id,err,pred_pos,key\n";
+
+        std::ifstream body_input(body_path);
+        if (!body_input) throw std::runtime_error("failed to reopen temporary collector output");
+        out << body_input.rdbuf();
+        out.close();
+        if (!out) throw std::runtime_error("failed while publishing collector output");
+        std::filesystem::remove(body_path, remove_error);
+
+        std::cerr << "[rmi_collector] records accepted: max_error=" << max_error
+                  << " used_leaves=" << leaf_counts.size()
+                  << " dominant_leaf_ratio=" << std::fixed << std::setprecision(6)
+                  << dominant_leaf_ratio << std::endl;
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[rmi_collector] " << e.what() << std::endl;

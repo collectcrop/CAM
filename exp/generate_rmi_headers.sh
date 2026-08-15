@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Generate CDFShop/RMI C++ artifacts for the branch factors compiled by
-# exp/rmi_bench.cpp. The default namespace pattern is:
+# Generate CDFShop/RMI C++ artifacts and an rmi_bench registry for
+# the requested model family. The default namespace pattern is:
 #   books_rmi_linear_spline_linear_<BF>
 #
 # Main outputs:
@@ -45,6 +45,8 @@ QUERY_LIMIT="${QUERY_LIMIT:-0}"
 BUILD_RMI_BENCH="${BUILD_RMI_BENCH:-1}"
 BUILD_JOBS="${BUILD_JOBS:-$(nproc 2>/dev/null || printf '4')}"
 DRY_RUN="${DRY_RUN:-0}"
+COLLECT_MAX_ERROR_FRACTION="${COLLECT_MAX_ERROR_FRACTION:-0.25}"
+COLLECT_MAX_DOMINANT_LEAF_RATIO="${COLLECT_MAX_DOMINANT_LEAF_RATIO:-0.99}"
 ALLOW_RMI_DATASET_MISMATCH="${ALLOW_RMI_DATASET_MISMATCH:-0}"
 
 abspath() {
@@ -216,6 +218,7 @@ write_artifact_meta() {
     printf 'query_path=%s\n' "$QUERY_ABS"
     printf 'rmi_data_dir=%s\n' "$RMI_DATA_DIR_ABS"
     printf 'generated_dir=%s\n' "$GENERATED_DIR_ABS"
+    printf 'stats_file=%s\n' "$GENERATED_DIR_ABS/$namespace.stats.json"
     printf 'generated_at_epoch=%s\n' "$(date +%s)"
   } > "$generated_meta"
   cp "$generated_meta" "$data_meta"
@@ -236,6 +239,7 @@ train_one_rmi() {
     "$MODELS"
     "$branch_factor"
     --data-path "$RMI_DATA_DIR_ABS"
+    --stats-file "$GENERATED_DIR_ABS/$namespace.stats.json"
   )
   if [ "$THREADS" -gt 0 ]; then
     cargo_cmd+=(--threads "$THREADS")
@@ -287,6 +291,11 @@ train_one_rmi() {
     if [ "$QUERY_LIMIT" -gt 0 ]; then
       collector_cmd+=(--query-limit "$QUERY_LIMIT")
     fi
+    collector_cmd+=(
+      --branch-factor "$branch_factor"
+      --max-error-fraction "$COLLECT_MAX_ERROR_FRACTION"
+      --max-dominant-leaf-ratio "$COLLECT_MAX_DOMINANT_LEAF_RATIO"
+    )
     run_cmd "${collector_cmd[@]}"
   fi
 }
@@ -303,10 +312,6 @@ QUERY_ABS="$(abspath "$QUERY_PATH")"
 TRAIN_DATA_SOURCE_PATH="$(default_train_data_source_path)"
 TRAIN_DATA_SOURCE_ABS="$(abspath "$TRAIN_DATA_SOURCE_PATH")"
 
-if [ "$NAMESPACE_PREFIX" != "books_rmi" ] || [ "$MODELS" != "linear_spline,linear" ]; then
-  echo "[warn] exp/rmi_bench.cpp is currently wired to books_rmi_linear_spline_linear_<BF>."
-  echo "[warn] Different NAMESPACE_PREFIX/MODELS can generate collector records, but rmi_bench will not use them until CMake/rmi_bench.cpp are updated."
-fi
 
 echo "[config] TRAIN_DATA_PATH=$TRAIN_DATA_ABS"
 echo "[config] TRAIN_DATA_SOURCE_PATH=$TRAIN_DATA_SOURCE_ABS"
@@ -322,6 +327,8 @@ echo "[config] BUILD_RMI_BENCH=$BUILD_RMI_BENCH"
 echo "[config] ALLOW_RMI_DATASET_MISMATCH=$ALLOW_RMI_DATASET_MISMATCH"
 echo "[config] AUTO_PREPARE_RMI_TRAIN_DATA=$AUTO_PREPARE_RMI_TRAIN_DATA"
 echo "[config] TRAIN_DATA_SOURCE_HEADER=$TRAIN_DATA_SOURCE_HEADER"
+echo "[config] COLLECT_MAX_ERROR_FRACTION=$COLLECT_MAX_ERROR_FRACTION"
+echo "[config] COLLECT_MAX_DOMINANT_LEAF_RATIO=$COLLECT_MAX_DOMINANT_LEAF_RATIO"
 
 if [ "$DRY_RUN" != "1" ]; then
   mkdir -p "$GENERATED_DIR_ABS" "$RESULTS_DIR_ABS" "$RMI_DATA_DIR_ABS"
@@ -336,7 +343,14 @@ done
 
 if [ "$BUILD_RMI_BENCH" = "1" ]; then
   echo "[configure] cmake"
-  run_cmd cmake -S "$REPO_ROOT" -B "$BUILD_DIR_ABS"
+  cmake_bf_list="${BF_LIST// /;}"
+  run_cmd cmake -S "$REPO_ROOT" -B "$BUILD_DIR_ABS" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCAM_RMI_GENERATED_DIR="$GENERATED_DIR_ABS" \
+    -DCAM_RMI_NAMESPACE_PREFIX="$NAMESPACE_PREFIX" \
+    -DCAM_RMI_MODELS="$MODELS" \
+    -DCAM_RMI_BRANCH_FACTORS="$cmake_bf_list" \
+    -DCAM_RMI_CONFIGS_FILE=
   echo "[build] rmi_bench"
   run_cmd cmake --build "$BUILD_DIR_ABS" --target rmi_bench -j "$BUILD_JOBS"
 fi

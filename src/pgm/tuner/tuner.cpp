@@ -15,6 +15,7 @@
 
 #include "tuner.hpp"
 #include "args.hxx"
+#include "utils.hpp"
 #include <cstdint>
 #include <iostream>
 
@@ -87,6 +88,9 @@ void run_tuner(args::ValueFlag<size_t> &time,
                args::ValueFlag<float> &ratio,
                args::Positional<std::string> &file) {
     std::vector<K> data = read_data_binary<K>(file.Get(), true);
+    const size_t sentinel_fixed = sanitize_data_pgm_safe(data);
+    if (sentinel_fixed != 0)
+        std::cerr << "[tuner] sentinel_fixed=" << sentinel_fixed << '\n';
 
     std::sort(data.begin(), data.end());
     auto lo_eps = 2 * cache_line_size() / sizeof(int64_t);

@@ -22,3 +22,6 @@ src/rmi/*_L1_PARAMETERS
 src/rmi/*_data.h
 src/rmi/*_rmi_*.h
 src/rmi/*_rmi_*.cpp
+
+temp.sh
+rmi_tunner_cmp.sh
